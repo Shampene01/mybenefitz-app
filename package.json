@@ -1,0 +1,39 @@
+{
+  "name": "mybenefitz-app",
+  "version": "1.0.0",
+  "main": "expo-router/entry",
+  "scripts": {
+    "start": "expo start",
+    "android": "expo start --android",
+    "ios": "expo start --ios",
+    "web": "expo start --web",
+    "lint": "eslint ."
+  },
+  "dependencies": {
+    "@expo/vector-icons": "^14.0.0",
+    "@react-native-async-storage/async-storage": "1.21.0",
+    "@react-navigation/native": "^6.1.9",
+    "expo": "~50.0.0",
+    "expo-font": "~11.10.0",
+    "expo-image-picker": "~14.7.1",
+    "expo-linking": "~6.2.0",
+    "expo-router": "~3.4.0",
+    "expo-splash-screen": "~0.26.0",
+    "expo-status-bar": "~1.11.0",
+    "expo-system-ui": "~2.9.0",
+    "firebase": "^10.8.0",
+    "react": "18.2.0",
+    "react-native": "0.73.2",
+    "react-native-gesture-handler": "~2.14.0",
+    "react-native-reanimated": "~3.6.0",
+    "react-native-safe-area-context": "4.8.2",
+    "react-native-screens": "~3.29.0",
+    "react-native-svg": "14.1.0"
+  },
+  "devDependencies": {
+    "@babel/core": "^7.23.0",
+    "@types/react": "~18.2.45",
+    "typescript": "^5.3.0"
+  },
+  "private": true
+}

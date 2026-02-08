@@ -1,0 +1,182 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ============================================================
+    // HELPER FUNCTIONS
+    // ============================================================
+
+    // Check if user is authenticated
+    function isAuth() {
+      return request.auth != null;
+    }
+
+    // Check if authenticated user matches a given uid
+    function isOwner(userId) {
+      return isAuth() && request.auth.uid == userId;
+    }
+
+    // Check if parent document's uid field references the current user
+    function parentOwnedByUser(parentPath) {
+      return isAuth()
+        && get(parentPath).data.uid == /databases/$(database)/documents/users/$(request.auth.uid);
+    }
+
+    // ============================================================
+    // MEDIA CAMPAIGNS (public content for authenticated users)
+    // ============================================================
+    // Used by the CampaignCarousel on the mobile app dashboard.
+    // Reads: any authenticated user
+    // Writes: any authenticated user (tighten to admin-only in production)
+    match /mediaCampaigns/{campaignId} {
+      allow read: if isAuth();
+      allow write: if isAuth();
+      allow delete: if false;
+    }
+
+    // ============================================================
+    // USER PROFILES
+    // ============================================================
+    // users collection is currently open for read/write.
+    // TODO: Tighten to owner-only in production.
+    match /users/{userId} {
+      allow create: if true;
+      allow read: if true;
+      allow write: if true;
+      allow delete: if false;
+
+      // Intermediary Appointments (subcollection)
+      match /intermediaryAppointment/{document} {
+        allow create: if request.resource.data.uid == /databases/$(database)/documents/users/$(request.auth.uid);
+        allow read: if resource.data.uid == /databases/$(database)/documents/users/$(request.auth.uid);
+        allow write: if resource.data.uid == /databases/$(database)/documents/users/$(request.auth.uid);
+        allow delete: if resource.data.uid == /databases/$(database)/documents/users/$(request.auth.uid);
+      }
+
+      // Short-Term Policies (subcollection)
+      match /shortTermPolicies/{document} {
+        allow create: if isOwner(get(/databases/$(database)/documents/users/$(userId)).data.uid);
+        allow read: if isOwner(get(/databases/$(database)/documents/users/$(userId)).data.uid);
+        allow write: if resource.data.userId == /databases/$(database)/documents/users/$(request.auth.uid);
+        allow delete: if resource.data.userId == /databases/$(database)/documents/users/$(request.auth.uid);
+      }
+    }
+
+    // Collection group query for intermediaryAppointment
+    match /{path=**}/intermediaryAppointment/{document} {
+      allow read: if resource.data.uid == /databases/$(database)/documents/users/$(request.auth.uid);
+    }
+
+    // ============================================================
+    // LOAN CUSTOMERS
+    // ============================================================
+    match /LoanCustomer/{customerId} {
+      allow create: if request.resource.data.uid == /databases/$(database)/documents/users/$(request.auth.uid);
+      allow read: if resource.data.uid == /databases/$(database)/documents/users/$(request.auth.uid);
+      allow write: if resource.data.uid == /databases/$(database)/documents/users/$(request.auth.uid);
+      allow delete: if false;
+
+      // Affordability Assessment (subcollection)
+      match /AffordabilityAssessment/{document} {
+        allow create: if parentOwnedByUser(/databases/$(database)/documents/LoanCustomer/$(customerId));
+        allow read: if parentOwnedByUser(/databases/$(database)/documents/LoanCustomer/$(customerId));
+        allow write: if parentOwnedByUser(/databases/$(database)/documents/LoanCustomer/$(customerId));
+        allow delete: if false;
+      }
+
+      // Loan Application (subcollection)
+      match /LoanApplication/{document} {
+        allow create: if parentOwnedByUser(/databases/$(database)/documents/LoanCustomer/$(customerId));
+        allow read: if parentOwnedByUser(/databases/$(database)/documents/LoanCustomer/$(customerId));
+        allow write: if parentOwnedByUser(/databases/$(database)/documents/LoanCustomer/$(customerId));
+        allow delete: if false;
+      }
+
+      // Loan Repayment (subcollection)
+      match /LoanRepayment/{document} {
+        allow create: if parentOwnedByUser(/databases/$(database)/documents/LoanCustomer/$(customerId));
+        allow read: if parentOwnedByUser(/databases/$(database)/documents/LoanCustomer/$(customerId));
+        allow write: if parentOwnedByUser(/databases/$(database)/documents/LoanCustomer/$(customerId));
+        allow delete: if false;
+      }
+
+      // Loan Documents (subcollection)
+      match /loanDocuments/{document} {
+        allow create: if parentOwnedByUser(/databases/$(database)/documents/LoanCustomer/$(customerId));
+        allow read: if parentOwnedByUser(/databases/$(database)/documents/LoanCustomer/$(customerId));
+        allow write: if parentOwnedByUser(/databases/$(database)/documents/LoanCustomer/$(customerId));
+        allow delete: if false;
+      }
+    }
+
+    // ============================================================
+    // LOANS (standalone collection)
+    // ============================================================
+    match /loan/{document} {
+      allow create: if request.resource.data.uid == /databases/$(database)/documents/users/$(request.auth.uid);
+      allow read: if resource.data.uid == /databases/$(database)/documents/users/$(request.auth.uid);
+      allow write: if resource.data.uid == /databases/$(database)/documents/users/$(request.auth.uid);
+      allow delete: if false;
+    }
+
+    // ============================================================
+    // POLICIES
+    // ============================================================
+    match /policy/{policyId} {
+      allow create: if request.resource.data.uid == /databases/$(database)/documents/users/$(request.auth.uid);
+      allow read: if resource.data.uid == /databases/$(database)/documents/users/$(request.auth.uid);
+      allow write: if resource.data.uid == /databases/$(database)/documents/users/$(request.auth.uid);
+      allow delete: if false;
+
+      // OTP Signature (subcollection)
+      match /OTPSignature/{document} {
+        allow create: if parentOwnedByUser(/databases/$(database)/documents/policy/$(policyId));
+        allow read: if parentOwnedByUser(/databases/$(database)/documents/policy/$(policyId));
+        allow write: if parentOwnedByUser(/databases/$(database)/documents/policy/$(policyId));
+        allow delete: if false;
+      }
+
+      // Replacement Details (subcollection)
+      match /ReplacementDetails/{document} {
+        allow create: if parentOwnedByUser(/databases/$(database)/documents/policy/$(policyId));
+        allow read: if parentOwnedByUser(/databases/$(database)/documents/policy/$(policyId));
+        allow write: if parentOwnedByUser(/databases/$(database)/documents/policy/$(policyId));
+        allow delete: if false;
+      }
+
+      // Banking Details (subcollection)
+      match /banking_details/{document} {
+        allow create: if parentOwnedByUser(/databases/$(database)/documents/policy/$(policyId));
+        allow read: if parentOwnedByUser(/databases/$(database)/documents/policy/$(policyId));
+        allow write: if parentOwnedByUser(/databases/$(database)/documents/policy/$(policyId));
+        allow delete: if parentOwnedByUser(/databases/$(database)/documents/policy/$(policyId));
+      }
+
+      // Beneficiary (subcollection)
+      match /beneficiary/{document} {
+        allow create: if parentOwnedByUser(/databases/$(database)/documents/policy/$(policyId));
+        allow read: if parentOwnedByUser(/databases/$(database)/documents/policy/$(policyId));
+        allow write: if parentOwnedByUser(/databases/$(database)/documents/policy/$(policyId));
+        allow delete: if parentOwnedByUser(/databases/$(database)/documents/policy/$(policyId));
+      }
+
+      // Dependent (subcollection)
+      match /dependent/{document} {
+        allow create: if parentOwnedByUser(/databases/$(database)/documents/policy/$(policyId));
+        allow read: if parentOwnedByUser(/databases/$(database)/documents/policy/$(policyId));
+        allow write: if parentOwnedByUser(/databases/$(database)/documents/policy/$(policyId));
+        allow delete: if false;
+      }
+    }
+
+    // ============================================================
+    // CATCH-ALL (expired — deny by default)
+    // ============================================================
+    // The original catch-all rule expired on 2024-12-02.
+    // All collections must have explicit rules above.
+    // Uncomment below temporarily if you need open access for debugging:
+    // match /{document=**} {
+    //   allow read, write: if request.time < timestamp.date(2025, 12, 31);
+    // }
+  }
+}
