@@ -355,10 +355,10 @@ FICA (Financial Intelligence Centre Act) compliance documents. Each field stores
 |-------|------|----------|-------------|
 | `fica` | `map` | Recommended | FICA document references (see sub-fields below) |
 | `fica.idDocument` | `string` | For products | Download URL — certified copy of SA ID or Smart ID card |
-| `fica.payslip` | `string` | For products | Download URL — latest payslip (not older than 3 months) |
+| `fica.proofOfAddress` | `string` | For products | Download URL — proof of address (utility bill, bank statement, or municipal account not older than 3 months) |
 | `fica.bankConfirmation` | `string` | For products | Download URL — bank confirmation letter or stamped statement |
 | `fica.idDocumentUploadedAt` | `string` | Auto | ISO 8601 timestamp when ID document was uploaded |
-| `fica.payslipUploadedAt` | `string` | Auto | ISO 8601 timestamp when payslip was uploaded |
+| `fica.proofOfAddressUploadedAt` | `string` | Auto | ISO 8601 timestamp when proof of address was uploaded |
 | `fica.bankConfirmationUploadedAt` | `string` | Auto | ISO 8601 timestamp when bank confirmation was uploaded |
 
 > **Storage path:** `users/{uid}/fica/{documentType}.{ext}`
@@ -421,10 +421,10 @@ Affiliate / referral programme data. Populated when a user participates in the r
   },
   "fica": {
     "idDocument": "https://firebasestorage.googleapis.com/v0/b/.../users/abc123/fica/idDocument.pdf",
-    "payslip": "https://firebasestorage.googleapis.com/v0/b/.../users/abc123/fica/payslip.pdf",
+    "proofOfAddress": "https://firebasestorage.googleapis.com/v0/b/.../users/abc123/fica/proofOfAddress.pdf",
     "bankConfirmation": "https://firebasestorage.googleapis.com/v0/b/.../users/abc123/fica/bankConfirmation.pdf",
     "idDocumentUploadedAt": "2026-02-07T13:00:00Z",
-    "payslipUploadedAt": "2026-02-07T13:05:00Z",
+    "proofOfAddressUploadedAt": "2026-02-07T13:05:00Z",
     "bankConfirmationUploadedAt": "2026-02-07T13:10:00Z"
   },
   "preferences": {

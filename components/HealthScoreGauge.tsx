@@ -28,7 +28,7 @@ function useMilestones() {
   const hasPersonal = !!(userProfile?.firstName && userProfile?.lastName && userProfile?.idNumber && userProfile?.phoneNumber);
   const hasAddress = !!(userProfile?.address?.street && userProfile?.address?.suburb && userProfile?.address?.city && userProfile?.address?.province);
   const hasIncome = !!(userProfile?.income?.employerName && userProfile?.income?.grossSalary);
-  const hasFica = !!(userProfile?.fica?.idDocument && userProfile?.fica?.payslip && userProfile?.fica?.bankConfirmation);
+  const hasFica = !!(userProfile?.fica?.idDocument && userProfile?.fica?.proofOfAddress && userProfile?.fica?.bankConfirmation);
 
   const milestones: Milestone[] = [
     { label: 'Personal details', points: 10, completed: hasPersonal },

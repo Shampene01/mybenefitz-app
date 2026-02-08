@@ -30,10 +30,10 @@ interface UserIncome {
 
 interface UserFica {
   idDocument?: string;
-  payslip?: string;
+  proofOfAddress?: string;
   bankConfirmation?: string;
   idDocumentUploadedAt?: string;
-  payslipUploadedAt?: string;
+  proofOfAddressUploadedAt?: string;
   bankConfirmationUploadedAt?: string;
 }
 

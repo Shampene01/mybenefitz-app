@@ -22,8 +22,8 @@ interface DocSlot {
   label: string;
   description: string;
   icon: keyof typeof Ionicons.glyphMap;
-  ficaField: 'idDocument' | 'payslip' | 'bankConfirmation';
-  timestampField: 'idDocumentUploadedAt' | 'payslipUploadedAt' | 'bankConfirmationUploadedAt';
+  ficaField: 'idDocument' | 'proofOfAddress' | 'bankConfirmation';
+  timestampField: 'idDocumentUploadedAt' | 'proofOfAddressUploadedAt' | 'bankConfirmationUploadedAt';
 }
 
 const documents: DocSlot[] = [
@@ -40,8 +40,8 @@ const documents: DocSlot[] = [
     label: 'Proof of Address',
     description: 'Utility bill, bank statement, or municipal account (not older than 3 months)',
     icon: 'home',
-    ficaField: 'payslip',
-    timestampField: 'payslipUploadedAt',
+    ficaField: 'proofOfAddress',
+    timestampField: 'proofOfAddressUploadedAt',
   },
   {
     key: 'bankConfirmation',
