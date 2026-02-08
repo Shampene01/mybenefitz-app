@@ -11,6 +11,7 @@ import {
   KeyboardAvoidingView,
   Platform,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../contexts/AuthContext';
@@ -80,7 +81,8 @@ export default function CreditApplyScreen() {
   };
 
   return (
-    <KeyboardAvoidingView style={styles.container} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
+    <SafeAreaView style={styles.container} edges={['bottom']}>
+    <KeyboardAvoidingView style={styles.innerContainer} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
       {/* Progress */}
       <View style={styles.progressBar}>
         {stepLabels.map((_, i) => (
@@ -259,6 +261,7 @@ export default function CreditApplyScreen() {
         </View>
       )}
     </KeyboardAvoidingView>
+    </SafeAreaView>
   );
 }
 
@@ -319,6 +322,9 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: Colors.background.light1,
+  },
+  innerContainer: {
+    flex: 1,
   },
   progressBar: {
     flexDirection: 'row',
