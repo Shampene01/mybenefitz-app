@@ -42,7 +42,8 @@
             "targetSdkVersion": 35
           }
         }
-      ]
+      ],
+      "expo-font"
     ],
     "experiments": {
       "typedRoutes": true
