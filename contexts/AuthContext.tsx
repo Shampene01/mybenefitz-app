@@ -8,7 +8,7 @@ import {
   sendPasswordResetEmail,
   updateProfile,
 } from 'firebase/auth';
-import { doc, setDoc, getDoc, serverTimestamp } from 'firebase/firestore';
+import { doc, setDoc, getDoc, collection, query, where, getDocs, limit, arrayUnion, serverTimestamp } from 'firebase/firestore';
 import { auth, db } from '../lib/firebase';
 
 interface UserAddress {
@@ -51,23 +51,40 @@ interface UserAffiliate {
 }
 
 interface UserProfile {
+  // --- Core Identifiers ---
   uid: string;
-  email: string;
+  authUid?: string;
+  waId?: string;
+  idNumber?: string;
+
+  // --- Personal Info ---
   firstName?: string;
   lastName?: string;
+  fullName?: string;
   displayName: string;
+  email: string;
   phoneNumber?: string;
   whatsappNumber?: string;
-  idNumber?: string;
   photoURL?: string;
-  tenantId?: string;
+
+  // --- Unified Schema Fields ---
+  linkStatus: 'whatsapp_only' | 'app_only' | 'linked';
+  channels: ('whatsapp' | 'app')[];
+  primaryChannel: 'whatsapp' | 'app';
+  source: string;
+  linkedAt?: string;
+  linkedBy?: string;
+
+  // --- Existing Fields ---
   role?: string;
-  source?: string;
+  tenantId?: string;
+  onboarded?: boolean;
   address?: UserAddress;
   income?: UserIncome;
   fica?: UserFica;
   preferences?: UserPreferences;
   affiliate?: UserAffiliate;
+
   createdAt?: string;
   updatedAt?: string;
 }
@@ -94,7 +111,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
       setUser(user);
       if (user) {
-        const profileDoc = await getDoc(doc(db, 'users', user.uid));
+        const profileDoc = await getDoc(doc(db, 'profiles', user.uid));
         if (profileDoc.exists()) {
           setUserProfile(profileDoc.data() as UserProfile);
         }
@@ -114,19 +131,102 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const signUp = async (email: string, password: string, displayName: string) => {
     const { user } = await createUserWithEmailAndPassword(auth, email, password);
     await updateProfile(user, { displayName });
-    
-    const now = new Date().toISOString();
-    const profile: UserProfile = {
-      uid: user.uid,
-      email: user.email!,
-      displayName,
-      role: 'user',
-      source: 'self-registration',
-      createdAt: now,
-      updatedAt: now,
-    };
 
-    await setDoc(doc(db, 'users', user.uid), profile);
+    const now = new Date().toISOString();
+    const normalizedEmail = user.email!.trim().toLowerCase();
+    const [firstName, ...rest] = displayName.split(' ');
+    const lastName = rest.join(' ') || undefined;
+
+    // Check if a WhatsApp-only profile already exists for this email
+    let existingProfile: { id: string; data: Record<string, unknown> } | null = null;
+    try {
+      const profilesRef = collection(db, 'profiles');
+      const q = query(
+        profilesRef,
+        where('email', '==', normalizedEmail),
+        where('linkStatus', '==', 'whatsapp_only'),
+        limit(1),
+      );
+      const snap = await getDocs(q);
+      if (!snap.empty) {
+        existingProfile = { id: snap.docs[0].id, data: snap.docs[0].data() as Record<string, unknown> };
+      }
+    } catch (err) {
+      console.warn('[AuthContext] Could not check for existing profiles:', err);
+    }
+
+    let profile: UserProfile;
+
+    if (existingProfile) {
+      // LINK: Merge app credentials into existing WhatsApp profile
+      const linkData = {
+        authUid: user.uid,
+        email: normalizedEmail,
+        firstName,
+        lastName,
+        fullName: displayName,
+        displayName,
+        linkStatus: 'linked' as const,
+        linkedAt: now,
+        linkedBy: 'email',
+        channels: arrayUnion('app'),
+        role: 'user',
+        updatedAt: now,
+      };
+      await setDoc(doc(db, 'profiles', existingProfile.id), linkData, { merge: true });
+
+      // Also create a pointer doc at the auth UID so reads by UID still work
+      if (existingProfile.id !== user.uid) {
+        await setDoc(doc(db, 'profiles', user.uid), {
+          ...existingProfile.data,
+          ...linkData,
+          channels: ['whatsapp', 'app'],
+          createdAt: (existingProfile.data.createdAt as string) || now,
+        });
+      }
+
+      profile = {
+        uid: user.uid,
+        authUid: user.uid,
+        email: normalizedEmail,
+        firstName,
+        lastName,
+        fullName: displayName,
+        displayName,
+        linkStatus: 'linked',
+        channels: ['whatsapp', 'app'],
+        primaryChannel: 'app',
+        source: 'mobile_app',
+        linkedAt: now,
+        linkedBy: 'email',
+        role: 'user',
+        waId: (existingProfile.data.waId as string) || undefined,
+        createdAt: (existingProfile.data.createdAt as string) || now,
+        updatedAt: now,
+      };
+      console.log(`[AuthContext] Linked app user ${user.uid} to existing WhatsApp profile`);
+    } else {
+      // CREATE: New app-only profile
+      profile = {
+        uid: user.uid,
+        authUid: user.uid,
+        email: normalizedEmail,
+        firstName,
+        lastName,
+        fullName: displayName,
+        displayName,
+        linkStatus: 'app_only',
+        channels: ['app'],
+        primaryChannel: 'app',
+        source: 'mobile_app',
+        role: 'user',
+        createdAt: now,
+        updatedAt: now,
+      };
+      await setDoc(doc(db, 'profiles', user.uid), profile);
+      console.log(`[AuthContext] Created new app-only profile for ${user.uid}`);
+    }
+
     setUserProfile(profile);
   };
 
@@ -142,7 +242,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const updateUserProfile = async (data: Partial<UserProfile>) => {
     if (!user) return;
     
-    await setDoc(doc(db, 'users', user.uid), data, { merge: true });
+    await setDoc(doc(db, 'profiles', user.uid), data, { merge: true });
     setUserProfile((prev) => prev ? { ...prev, ...data } : null);
   };
 

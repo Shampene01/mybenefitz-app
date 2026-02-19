@@ -16,71 +16,169 @@ service cloud.firestore {
       return isAuth() && request.auth.uid == userId;
     }
 
+    // Check if the user has the admin role via custom claims OR is the platform owner
+    function isAdmin() {
+      return isAuth()
+        && (request.auth.token.role == 'admin'
+            || request.auth.token.email == 'shampene@lebonconsulting.co.za');
+    }
+
     // Check if parent document's uid field references the current user
     function parentOwnedByUser(parentPath) {
       return isAuth()
         && get(parentPath).data.uid == /databases/$(database)/documents/users/$(request.auth.uid);
     }
 
+    // Check if user's email is verified
+    function isVerified() {
+      return isAuth() && request.auth.token.email_verified == true;
+    }
+
+    // Validate that incoming data has the required updatedAt timestamp
+    function hasTimestamp() {
+      return request.resource.data.keys().hasAll(['updatedAt']);
+    }
+
     // ============================================================
-    // MEDIA CAMPAIGNS (public content for authenticated users)
+    // CONTACTS (WhatsApp / partner channel profiles)
     // ============================================================
-    // Used by the CampaignCarousel on the mobile app dashboard.
-    // Reads: any authenticated user
-    // Writes: any authenticated user (tighten to admin-only in production)
-    match /mediaCampaigns/{campaignId} {
-      allow read: if isAuth();
-      allow write: if isAuth();
+    // Server-side Cloud Functions and admin users manage contacts.
+    // Linked portal users can read their own contact record.
+    match /contacts/{contactId} {
+      // Read: admin, already-linked verified user, OR verified user whose email matches
+      allow read: if isAdmin()
+        || (isVerified() && resource.data.linkedUserId == request.auth.uid)
+        || (isVerified() && resource.data.email == request.auth.token.email);
+      allow create: if isAdmin();
+      // Update: admin can do anything; verified user can ONLY set
+      // linkedUserId (to their own uid) and linkingStrategy — and only if
+      // the contact email matches their verified email.
+      allow update: if isAdmin()
+        || (isVerified()
+            && resource.data.email == request.auth.token.email
+            && request.resource.data.diff(resource.data).affectedKeys()
+               .hasOnly(['linkedUserId', 'linkingStrategy'])
+            && request.resource.data.linkedUserId == request.auth.uid);
+      allow delete: if false;
+
+      // Consents subcollection
+      match /consents/{consentId} {
+        allow read: if isAdmin();
+        allow create: if isAdmin();
+        allow update: if isAdmin();
+        allow delete: if false;
+      }
+    }
+
+    // ============================================================
+    // CLIENT PRODUCTS (WhatsApp-originated product applications)
+    // ============================================================
+    // Linked portal users can read their own products via email match.
+    // Admin and Cloud Functions manage writes.
+    match /clientProducts/{productId} {
+      allow read: if isAdmin()
+        || (isVerified() && resource.data.email == request.auth.token.email);
+      allow create: if isAdmin();
+      allow update: if isAdmin();
       allow delete: if false;
     }
 
     // ============================================================
-    // USER PROFILES
+    // PAYMENT LINKS (WhatsApp payment links)
     // ============================================================
-    // users collection is currently open for read/write.
-    // TODO: Tighten to owner-only in production.
-    match /users/{userId} {
-      allow create: if true;
-      allow read: if true;
-      allow write: if true;
+    match /paymentLinks/{linkId} {
+      allow read: if isAdmin()
+        || (isVerified() && resource.data.email == request.auth.token.email);
+      allow create: if isAdmin();
+      allow update: if isAdmin();
       allow delete: if false;
+    }
+
+    // ============================================================
+    // MEDIA CAMPAIGNS (public content)
+    // ============================================================
+    // Used by the CampaignCarousel on the mobile app dashboard.
+    // Reads: any authenticated user
+    // Writes: admin only
+    match /mediaCampaigns/{campaignId} {
+      allow read: if isAuth();
+      allow create: if isAdmin();
+      allow update: if isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    // ============================================================
+    // PROFILES (unified collection — replaces users + contacts)
+    // ============================================================
+    // Owner can create, read, and update their own document.
+    // Users cannot delete their own profile (admin/backend only).
+    // Admins can read any profile.
+    match /profiles/{profileId} {
+      allow create: if isOwner(profileId) || isAdmin();
+      allow read: if isOwner(profileId) || isAdmin();
+      allow update: if isOwner(profileId) || isAdmin();
+      allow delete: if false;
+
+      // Consents subcollection
+      match /consents/{consentId} {
+        allow read: if isOwner(profileId) || isAdmin();
+        allow create: if isOwner(profileId) || isAdmin();
+        allow update: if isAdmin();
+        allow delete: if false;
+      }
 
       // Intermediary Appointments (subcollection)
       match /intermediaryAppointment/{document} {
-        allow create: if request.resource.data.uid == /databases/$(database)/documents/users/$(request.auth.uid);
-        allow read: if resource.data.uid == /databases/$(database)/documents/users/$(request.auth.uid);
-        allow write: if resource.data.uid == /databases/$(database)/documents/users/$(request.auth.uid);
-        allow delete: if resource.data.uid == /databases/$(database)/documents/users/$(request.auth.uid);
+        allow create: if isOwner(profileId);
+        allow read: if isOwner(profileId) || isAdmin();
+        allow update: if isOwner(profileId);
+        allow delete: if isOwner(profileId);
       }
 
       // Short-Term Policies (subcollection)
       match /shortTermPolicies/{document} {
-        allow create: if isOwner(get(/databases/$(database)/documents/users/$(userId)).data.uid);
-        allow read: if isOwner(get(/databases/$(database)/documents/users/$(userId)).data.uid);
-        allow write: if resource.data.userId == /databases/$(database)/documents/users/$(request.auth.uid);
-        allow delete: if resource.data.userId == /databases/$(database)/documents/users/$(request.auth.uid);
+        allow create: if isOwner(profileId);
+        allow read: if isOwner(profileId) || isAdmin();
+        allow update: if isOwner(profileId);
+        allow delete: if isOwner(profileId);
       }
+    }
+
+    // ============================================================
+    // LEGACY: USER PROFILES (read-only for 90-day migration)
+    // ============================================================
+    match /users/{userId} {
+      allow read: if isOwner(userId) || isAdmin();
+      allow write: if false;
     }
 
     // Collection group query for intermediaryAppointment
     match /{path=**}/intermediaryAppointment/{document} {
-      allow read: if resource.data.uid == /databases/$(database)/documents/users/$(request.auth.uid);
+      allow read: if isAuth()
+        && (resource.data.uid == /databases/$(database)/documents/profiles/$(request.auth.uid)
+            || resource.data.uid == /databases/$(database)/documents/users/$(request.auth.uid));
     }
 
     // ============================================================
     // LOAN CUSTOMERS
     // ============================================================
     match /LoanCustomer/{customerId} {
-      allow create: if request.resource.data.uid == /databases/$(database)/documents/users/$(request.auth.uid);
-      allow read: if resource.data.uid == /databases/$(database)/documents/users/$(request.auth.uid);
-      allow write: if resource.data.uid == /databases/$(database)/documents/users/$(request.auth.uid);
+      allow create: if isAuth()
+        && (request.resource.data.uid == /databases/$(database)/documents/profiles/$(request.auth.uid)
+            || request.resource.data.uid == /databases/$(database)/documents/users/$(request.auth.uid));
+      allow read: if isAuth()
+        && (resource.data.uid == /databases/$(database)/documents/profiles/$(request.auth.uid)
+            || resource.data.uid == /databases/$(database)/documents/users/$(request.auth.uid));
+      allow update: if isAuth()
+        && (resource.data.uid == /databases/$(database)/documents/profiles/$(request.auth.uid)
+            || resource.data.uid == /databases/$(database)/documents/users/$(request.auth.uid));
       allow delete: if false;
 
       // Affordability Assessment (subcollection)
       match /AffordabilityAssessment/{document} {
         allow create: if parentOwnedByUser(/databases/$(database)/documents/LoanCustomer/$(customerId));
         allow read: if parentOwnedByUser(/databases/$(database)/documents/LoanCustomer/$(customerId));
-        allow write: if parentOwnedByUser(/databases/$(database)/documents/LoanCustomer/$(customerId));
+        allow update: if parentOwnedByUser(/databases/$(database)/documents/LoanCustomer/$(customerId));
         allow delete: if false;
       }
 
@@ -88,7 +186,7 @@ service cloud.firestore {
       match /LoanApplication/{document} {
         allow create: if parentOwnedByUser(/databases/$(database)/documents/LoanCustomer/$(customerId));
         allow read: if parentOwnedByUser(/databases/$(database)/documents/LoanCustomer/$(customerId));
-        allow write: if parentOwnedByUser(/databases/$(database)/documents/LoanCustomer/$(customerId));
+        allow update: if parentOwnedByUser(/databases/$(database)/documents/LoanCustomer/$(customerId));
         allow delete: if false;
       }
 
@@ -96,7 +194,7 @@ service cloud.firestore {
       match /LoanRepayment/{document} {
         allow create: if parentOwnedByUser(/databases/$(database)/documents/LoanCustomer/$(customerId));
         allow read: if parentOwnedByUser(/databases/$(database)/documents/LoanCustomer/$(customerId));
-        allow write: if parentOwnedByUser(/databases/$(database)/documents/LoanCustomer/$(customerId));
+        allow update: if parentOwnedByUser(/databases/$(database)/documents/LoanCustomer/$(customerId));
         allow delete: if false;
       }
 
@@ -104,7 +202,7 @@ service cloud.firestore {
       match /loanDocuments/{document} {
         allow create: if parentOwnedByUser(/databases/$(database)/documents/LoanCustomer/$(customerId));
         allow read: if parentOwnedByUser(/databases/$(database)/documents/LoanCustomer/$(customerId));
-        allow write: if parentOwnedByUser(/databases/$(database)/documents/LoanCustomer/$(customerId));
+        allow update: if parentOwnedByUser(/databases/$(database)/documents/LoanCustomer/$(customerId));
         allow delete: if false;
       }
     }
@@ -113,9 +211,15 @@ service cloud.firestore {
     // LOANS (standalone collection)
     // ============================================================
     match /loan/{document} {
-      allow create: if request.resource.data.uid == /databases/$(database)/documents/users/$(request.auth.uid);
-      allow read: if resource.data.uid == /databases/$(database)/documents/users/$(request.auth.uid);
-      allow write: if resource.data.uid == /databases/$(database)/documents/users/$(request.auth.uid);
+      allow create: if isAuth()
+        && (request.resource.data.uid == /databases/$(database)/documents/profiles/$(request.auth.uid)
+            || request.resource.data.uid == /databases/$(database)/documents/users/$(request.auth.uid));
+      allow read: if isAuth()
+        && (resource.data.uid == /databases/$(database)/documents/profiles/$(request.auth.uid)
+            || resource.data.uid == /databases/$(database)/documents/users/$(request.auth.uid));
+      allow update: if isAuth()
+        && (resource.data.uid == /databases/$(database)/documents/profiles/$(request.auth.uid)
+            || resource.data.uid == /databases/$(database)/documents/users/$(request.auth.uid));
       allow delete: if false;
     }
 
@@ -123,16 +227,22 @@ service cloud.firestore {
     // POLICIES
     // ============================================================
     match /policy/{policyId} {
-      allow create: if request.resource.data.uid == /databases/$(database)/documents/users/$(request.auth.uid);
-      allow read: if resource.data.uid == /databases/$(database)/documents/users/$(request.auth.uid);
-      allow write: if resource.data.uid == /databases/$(database)/documents/users/$(request.auth.uid);
+      allow create: if isAuth()
+        && (request.resource.data.uid == /databases/$(database)/documents/profiles/$(request.auth.uid)
+            || request.resource.data.uid == /databases/$(database)/documents/users/$(request.auth.uid));
+      allow read: if isAuth()
+        && (resource.data.uid == /databases/$(database)/documents/profiles/$(request.auth.uid)
+            || resource.data.uid == /databases/$(database)/documents/users/$(request.auth.uid));
+      allow update: if isAuth()
+        && (resource.data.uid == /databases/$(database)/documents/profiles/$(request.auth.uid)
+            || resource.data.uid == /databases/$(database)/documents/users/$(request.auth.uid));
       allow delete: if false;
 
       // OTP Signature (subcollection)
       match /OTPSignature/{document} {
         allow create: if parentOwnedByUser(/databases/$(database)/documents/policy/$(policyId));
         allow read: if parentOwnedByUser(/databases/$(database)/documents/policy/$(policyId));
-        allow write: if parentOwnedByUser(/databases/$(database)/documents/policy/$(policyId));
+        allow update: if parentOwnedByUser(/databases/$(database)/documents/policy/$(policyId));
         allow delete: if false;
       }
 
@@ -140,7 +250,7 @@ service cloud.firestore {
       match /ReplacementDetails/{document} {
         allow create: if parentOwnedByUser(/databases/$(database)/documents/policy/$(policyId));
         allow read: if parentOwnedByUser(/databases/$(database)/documents/policy/$(policyId));
-        allow write: if parentOwnedByUser(/databases/$(database)/documents/policy/$(policyId));
+        allow update: if parentOwnedByUser(/databases/$(database)/documents/policy/$(policyId));
         allow delete: if false;
       }
 
@@ -148,7 +258,7 @@ service cloud.firestore {
       match /banking_details/{document} {
         allow create: if parentOwnedByUser(/databases/$(database)/documents/policy/$(policyId));
         allow read: if parentOwnedByUser(/databases/$(database)/documents/policy/$(policyId));
-        allow write: if parentOwnedByUser(/databases/$(database)/documents/policy/$(policyId));
+        allow update: if parentOwnedByUser(/databases/$(database)/documents/policy/$(policyId));
         allow delete: if parentOwnedByUser(/databases/$(database)/documents/policy/$(policyId));
       }
 
@@ -156,7 +266,7 @@ service cloud.firestore {
       match /beneficiary/{document} {
         allow create: if parentOwnedByUser(/databases/$(database)/documents/policy/$(policyId));
         allow read: if parentOwnedByUser(/databases/$(database)/documents/policy/$(policyId));
-        allow write: if parentOwnedByUser(/databases/$(database)/documents/policy/$(policyId));
+        allow update: if parentOwnedByUser(/databases/$(database)/documents/policy/$(policyId));
         allow delete: if parentOwnedByUser(/databases/$(database)/documents/policy/$(policyId));
       }
 
@@ -164,19 +274,57 @@ service cloud.firestore {
       match /dependent/{document} {
         allow create: if parentOwnedByUser(/databases/$(database)/documents/policy/$(policyId));
         allow read: if parentOwnedByUser(/databases/$(database)/documents/policy/$(policyId));
-        allow write: if parentOwnedByUser(/databases/$(database)/documents/policy/$(policyId));
+        allow update: if parentOwnedByUser(/databases/$(database)/documents/policy/$(policyId));
         allow delete: if false;
       }
     }
 
     // ============================================================
-    // CATCH-ALL (expired — deny by default)
+    // CONVERSATIONS (WhatsApp audit — admin/backend only)
     // ============================================================
-    // The original catch-all rule expired on 2024-12-02.
-    // All collections must have explicit rules above.
-    // Uncomment below temporarily if you need open access for debugging:
-    // match /{document=**} {
-    //   allow read, write: if request.time < timestamp.date(2025, 12, 31);
-    // }
+    match /conversations/{conversationId} {
+      allow read: if isAdmin();
+      allow write: if false; // Cloud Functions only
+      allow delete: if false;
+
+      match /messages/{messageId} {
+        allow read: if isAdmin();
+        allow write: if false; // Cloud Functions only
+        allow delete: if false;
+      }
+    }
+
+    // ============================================================
+    // AFFILIATE APPLICATIONS (user creates own, admin reads all)
+    // ============================================================
+    match /affiliateApplications/{userId} {
+      allow create: if isOwner(userId);
+      allow read: if isOwner(userId) || isAdmin();
+      allow update: if isAdmin();
+      allow delete: if false;
+    }
+
+    // ============================================================
+    // EVENTS (webhook audit log — backend only)
+    // ============================================================
+    match /events/{eventId} {
+      allow read: if isAdmin();
+      allow write: if false; // Cloud Functions only
+      allow delete: if false;
+    }
+
+    // ============================================================
+    // LINKING AUDIT LOG (tracks contact→user link events)
+    // ============================================================
+    match /linkingAuditLog/{logId} {
+      allow read: if isAdmin();
+      allow create: if isVerified();
+      allow update: if false;
+      allow delete: if false;
+    }
+
+    // ============================================================
+    // DEFAULT DENY — all unmatched paths are blocked
+    // ============================================================
   }
 }

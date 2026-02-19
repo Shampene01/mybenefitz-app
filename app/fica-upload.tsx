@@ -72,7 +72,7 @@ export default function FicaUploadScreen() {
       }
 
       const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        mediaTypes: ['images'],
         allowsEditing: false,
         quality: 0.8,
       });
@@ -91,7 +91,7 @@ export default function FicaUploadScreen() {
       }
 
       const ext = asset.uri.split('.').pop() || 'jpg';
-      const storagePath = `users/${uid}/fica/${doc.ficaField}.${ext}`;
+      const storagePath = `profiles/${uid}/fica/${doc.ficaField}.${ext}`;
       const storageRef = ref(storage, storagePath);
 
       const response = await fetch(asset.uri);
@@ -158,7 +158,7 @@ export default function FicaUploadScreen() {
       }
 
       const ext = asset.uri.split('.').pop() || 'jpg';
-      const storagePath = `users/${uid}/fica/${doc.ficaField}.${ext}`;
+      const storagePath = `profiles/${uid}/fica/${doc.ficaField}.${ext}`;
       const storageRef = ref(storage, storagePath);
 
       const response = await fetch(asset.uri);
