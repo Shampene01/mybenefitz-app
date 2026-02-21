@@ -1,15 +1,50 @@
 import React, { createContext, useContext, useEffect, useState, ReactNode } from 'react';
 import {
   User,
+  UserCredential,
   onAuthStateChanged,
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
   signOut as firebaseSignOut,
   sendPasswordResetEmail,
+  sendEmailVerification,
   updateProfile,
 } from 'firebase/auth';
-import { doc, setDoc, getDoc, collection, query, where, getDocs, limit, arrayUnion, serverTimestamp } from 'firebase/firestore';
+import { doc, setDoc, getDoc } from 'firebase/firestore';
 import { auth, db } from '../lib/firebase';
+
+const LINK_PROFILE_API_URL = 'https://app.mybenefitz.co.za/api/link-profile';
+
+interface LinkProfileResult {
+  linked: boolean;
+  profile: Record<string, unknown>;
+  alreadyLinked?: boolean;
+  whatsAppProfileId?: string;
+}
+
+async function callLinkProfileAPI(
+  idToken: string,
+  body: Record<string, string>,
+): Promise<LinkProfileResult | null> {
+  try {
+    const res = await fetch(LINK_PROFILE_API_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${idToken}`,
+      },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      console.warn('[AuthContext] link-profile API returned', res.status);
+      return null;
+    }
+    return (await res.json()) as LinkProfileResult;
+  } catch (err) {
+    console.warn('[AuthContext] link-profile API call failed:', err);
+    return null;
+  }
+}
 
 interface UserAddress {
   street?: string;
@@ -35,6 +70,22 @@ interface UserFica {
   idDocumentUploadedAt?: string;
   proofOfAddressUploadedAt?: string;
   bankConfirmationUploadedAt?: string;
+}
+
+interface IdentityVerification {
+  status: 'not_verified' | 'pending_verification' | 'home_affairs_verified';
+  method?: 'said_verification' | 'realtime_idv';
+  verifiedAt?: string;
+  verifiedFirstNames?: string;
+  verifiedLastName?: string;
+  verifiedDateOfBirth?: string;
+  verifiedGender?: string;
+  verifiedCitizenship?: string;
+  verifiedAge?: number;
+  dateIssued?: string;
+  lockedFields?: string[];
+  requestedAt?: string;
+  failureReason?: string;
 }
 
 interface UserPreferences {
@@ -85,6 +136,14 @@ interface UserProfile {
   preferences?: UserPreferences;
   affiliate?: UserAffiliate;
 
+  // --- Identity Verification ---
+  identityVerification?: IdentityVerification;
+
+  // --- Account Flags ---
+  accountFlagged?: boolean;
+  accountFlaggedReason?: string;
+  accountFlaggedAt?: string;
+
   createdAt?: string;
   updatedAt?: string;
 }
@@ -93,11 +152,17 @@ interface AuthContextType {
   user: User | null;
   userProfile: UserProfile | null;
   loading: boolean;
-  signIn: (email: string, password: string) => Promise<void>;
+  emailVerified: boolean;
+  isProfileComplete: boolean;
+  isHomeAffairsVerified: boolean;
+  isAccountFlagged: boolean;
+  signIn: (email: string, password: string) => Promise<UserCredential>;
   signUp: (email: string, password: string, displayName: string) => Promise<void>;
   signOut: () => Promise<void>;
   resetPassword: (email: string) => Promise<void>;
   updateUserProfile: (data: Partial<UserProfile>) => Promise<void>;
+  resendVerificationEmail: () => Promise<void>;
+  reloadUser: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -111,10 +176,70 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
       setUser(user);
       if (user) {
+        // Try the new 'profiles' collection first
         const profileDoc = await getDoc(doc(db, 'profiles', user.uid));
-        if (profileDoc.exists()) {
-          setUserProfile(profileDoc.data() as UserProfile);
+        let profile: UserProfile | null = profileDoc.exists()
+          ? (profileDoc.data() as UserProfile)
+          : null;
+
+        if (!profile) {
+          // Fallback: read from legacy 'users' collection and migrate
+          const legacyDoc = await getDoc(doc(db, 'users', user.uid));
+          if (legacyDoc.exists()) {
+            const legacyData = legacyDoc.data();
+            const now = new Date().toISOString();
+            const migratedProfile: UserProfile = {
+              uid: user.uid,
+              authUid: user.uid,
+              email: legacyData.email || user.email || '',
+              firstName: legacyData.firstName || '',
+              lastName: legacyData.lastName || '',
+              fullName: legacyData.fullName || legacyData.displayName || '',
+              displayName: legacyData.displayName || `${legacyData.firstName || ''} ${legacyData.lastName || ''}`.trim(),
+              phoneNumber: legacyData.phoneNumber,
+              whatsappNumber: legacyData.whatsappNumber,
+              idNumber: legacyData.idNumber,
+              photoURL: legacyData.photoURL,
+              linkStatus: 'app_only',
+              channels: ['app'],
+              primaryChannel: 'app',
+              source: legacyData.source || 'mobile_app',
+              role: legacyData.role || 'user',
+              onboarded: legacyData.onboarded,
+              address: legacyData.address,
+              income: legacyData.income,
+              fica: legacyData.fica,
+              preferences: legacyData.preferences,
+              affiliate: legacyData.affiliate,
+              createdAt: legacyData.createdAt || now,
+              updatedAt: now,
+            };
+            await setDoc(doc(db, 'profiles', user.uid), migratedProfile);
+            profile = migratedProfile;
+            console.log(`[AuthContext] Migrated legacy user ${user.uid} from users → profiles`);
+          }
         }
+
+        // If profile is app_only and email is verified, try server-side linking
+        if (profile && profile.linkStatus === 'app_only' && user.emailVerified && user.email) {
+          try {
+            const idToken = await user.getIdToken(true);
+            const linkResult = await callLinkProfileAPI(idToken, {
+              displayName: profile.displayName || '',
+              firstName: profile.firstName || '',
+              lastName: profile.lastName || '',
+              source: 'mobile_app',
+            });
+            if (linkResult?.linked) {
+              profile = linkResult.profile as unknown as UserProfile;
+              console.log('[AuthContext] Server-side linking succeeded');
+            }
+          } catch (err) {
+            console.warn('[AuthContext] Server-side linking failed:', err);
+          }
+        }
+
+        setUserProfile(profile);
       } else {
         setUserProfile(null);
       }
@@ -125,109 +250,47 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const signIn = async (email: string, password: string) => {
-    await signInWithEmailAndPassword(auth, email, password);
+    const credential = await signInWithEmailAndPassword(auth, email, password);
+    return credential;
   };
 
   const signUp = async (email: string, password: string, displayName: string) => {
     const { user } = await createUserWithEmailAndPassword(auth, email, password);
     await updateProfile(user, { displayName });
 
-    const now = new Date().toISOString();
-    const normalizedEmail = user.email!.trim().toLowerCase();
     const [firstName, ...rest] = displayName.split(' ');
-    const lastName = rest.join(' ') || undefined;
+    const lastName = rest.join(' ') || '';
 
-    // Check if a WhatsApp-only profile already exists for this email
-    let existingProfile: { id: string; data: Record<string, unknown> } | null = null;
-    try {
-      const profilesRef = collection(db, 'profiles');
-      const q = query(
-        profilesRef,
-        where('email', '==', normalizedEmail),
-        where('linkStatus', '==', 'whatsapp_only'),
-        limit(1),
+    // Server-side check-and-link: the API uses Admin SDK to query
+    // profiles by email (bypasses Firestore isOwner rule).
+    // If a whatsapp_only profile exists → merges; otherwise → creates app_only.
+    const idToken = await user.getIdToken();
+    const linkResult = await callLinkProfileAPI(idToken, {
+      displayName,
+      firstName,
+      lastName,
+      source: 'mobile_app',
+    });
+
+    if (linkResult?.profile) {
+      const profile = linkResult.profile as unknown as UserProfile;
+      setUserProfile(profile);
+      console.log(
+        linkResult.linked
+          ? `[AuthContext] Linked app user ${user.uid} to existing WhatsApp profile`
+          : `[AuthContext] Created new app_only profile for ${user.uid}`,
       );
-      const snap = await getDocs(q);
-      if (!snap.empty) {
-        existingProfile = { id: snap.docs[0].id, data: snap.docs[0].data() as Record<string, unknown> };
-      }
-    } catch (err) {
-      console.warn('[AuthContext] Could not check for existing profiles:', err);
     }
 
-    let profile: UserProfile;
-
-    if (existingProfile) {
-      // LINK: Merge app credentials into existing WhatsApp profile
-      const linkData = {
-        authUid: user.uid,
-        email: normalizedEmail,
-        firstName,
-        lastName,
-        fullName: displayName,
-        displayName,
-        linkStatus: 'linked' as const,
-        linkedAt: now,
-        linkedBy: 'email',
-        channels: arrayUnion('app'),
-        role: 'user',
-        updatedAt: now,
-      };
-      await setDoc(doc(db, 'profiles', existingProfile.id), linkData, { merge: true });
-
-      // Also create a pointer doc at the auth UID so reads by UID still work
-      if (existingProfile.id !== user.uid) {
-        await setDoc(doc(db, 'profiles', user.uid), {
-          ...existingProfile.data,
-          ...linkData,
-          channels: ['whatsapp', 'app'],
-          createdAt: (existingProfile.data.createdAt as string) || now,
-        });
+    // Send email verification
+    try {
+      await sendEmailVerification(user);
+    } catch (err: unknown) {
+      const code = (err as { code?: string }).code || '';
+      if (code !== 'auth/too-many-requests') {
+        console.warn('[AuthContext] Verification email fallback failed:', err);
       }
-
-      profile = {
-        uid: user.uid,
-        authUid: user.uid,
-        email: normalizedEmail,
-        firstName,
-        lastName,
-        fullName: displayName,
-        displayName,
-        linkStatus: 'linked',
-        channels: ['whatsapp', 'app'],
-        primaryChannel: 'app',
-        source: 'mobile_app',
-        linkedAt: now,
-        linkedBy: 'email',
-        role: 'user',
-        waId: (existingProfile.data.waId as string) || undefined,
-        createdAt: (existingProfile.data.createdAt as string) || now,
-        updatedAt: now,
-      };
-      console.log(`[AuthContext] Linked app user ${user.uid} to existing WhatsApp profile`);
-    } else {
-      // CREATE: New app-only profile
-      profile = {
-        uid: user.uid,
-        authUid: user.uid,
-        email: normalizedEmail,
-        firstName,
-        lastName,
-        fullName: displayName,
-        displayName,
-        linkStatus: 'app_only',
-        channels: ['app'],
-        primaryChannel: 'app',
-        source: 'mobile_app',
-        role: 'user',
-        createdAt: now,
-        updatedAt: now,
-      };
-      await setDoc(doc(db, 'profiles', user.uid), profile);
-      console.log(`[AuthContext] Created new app-only profile for ${user.uid}`);
     }
-
-    setUserProfile(profile);
   };
 
   const signOut = async () => {
@@ -246,17 +309,59 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUserProfile((prev) => prev ? { ...prev, ...data } : null);
   };
 
+  const resendVerificationEmail = async () => {
+    if (!auth.currentUser) throw new Error('No user signed in');
+    if (auth.currentUser.emailVerified) throw new Error('Email already verified');
+    try {
+      await sendEmailVerification(auth.currentUser);
+    } catch (err: unknown) {
+      const code = (err as { code?: string }).code || '';
+      if (code === 'auth/too-many-requests') {
+        throw new Error('Too many requests. Please wait a few minutes before trying again.');
+      }
+      throw err;
+    }
+  };
+
+  const reloadUser = async () => {
+    if (!auth.currentUser) return;
+    await auth.currentUser.reload();
+    setUser({ ...auth.currentUser } as User);
+  };
+
+  const isProfileComplete = !!(
+    userProfile?.firstName &&
+    userProfile?.lastName &&
+    userProfile?.idNumber &&
+    userProfile?.phoneNumber &&
+    userProfile?.address?.street &&
+    userProfile?.address?.suburb &&
+    userProfile?.address?.city &&
+    userProfile?.address?.province &&
+    userProfile?.income?.employerName &&
+    userProfile?.income?.grossSalary
+  );
+  const isHomeAffairsVerified =
+    userProfile?.identityVerification?.status === 'home_affairs_verified';
+  const isAccountFlagged = !!userProfile?.accountFlagged;
+
   return (
     <AuthContext.Provider
       value={{
         user,
         userProfile,
         loading,
+        emailVerified: user?.emailVerified ?? false,
+        isProfileComplete,
+        isHomeAffairsVerified,
+        isAccountFlagged,
         signIn,
         signUp,
         signOut,
         resetPassword,
         updateUserProfile,
+        resendVerificationEmail,
+        reloadUser,
       }}
     >
       {children}
