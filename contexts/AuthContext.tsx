@@ -326,7 +326,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const reloadUser = async () => {
     if (!auth.currentUser) return;
     await auth.currentUser.reload();
-    setUser({ ...auth.currentUser } as User);
+    // Note: set the actual User object, not a spread copy (which loses methods like getIdToken)
+    setUser(auth.currentUser);
   };
 
   const isProfileComplete = !!(
