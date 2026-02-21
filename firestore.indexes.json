@@ -49,6 +49,38 @@
         { "fieldPath": "email", "order": "ASCENDING" },
         { "fieldPath": "linkStatus", "order": "ASCENDING" }
       ]
+    },
+    {
+      "collectionGroup": "profiles",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "idNumber", "order": "ASCENDING" },
+        { "fieldPath": "linkStatus", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "profiles",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "phoneNumber", "order": "ASCENDING" },
+        { "fieldPath": "linkStatus", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "profiles",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "whatsappNumber", "order": "ASCENDING" },
+        { "fieldPath": "linkStatus", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "profiles",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "waId", "order": "ASCENDING" },
+        { "fieldPath": "linkStatus", "order": "ASCENDING" }
+      ]
     }
   ],
   "fieldOverrides": []
