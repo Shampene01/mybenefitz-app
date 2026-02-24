@@ -27,8 +27,28 @@ service firebase.storage {
                        || request.resource.contentType == 'application/pdf');
     }
 
+    // Profile avatars stored with the rest of the profile folder
+    // Path: profiles/{profileId}/avatar/{file}
+    match /profiles/{profileId}/avatar/{file} {
+      allow read: if request.auth != null; // show avatars across the app
+      allow write: if request.auth != null
+                   && request.auth.uid == profileId
+                   && request.resource.size < 5 * 1024 * 1024
+                   && request.resource.contentType.matches('image/.*');
+    }
+
     // Path: profiles/{profileId}/affiliate/{file}
     match /profiles/{profileId}/affiliate/{file} {
+      allow read: if request.auth != null && request.auth.uid == profileId;
+      allow write: if request.auth != null
+                   && request.auth.uid == profileId
+                   && request.resource.size < 5 * 1024 * 1024
+                   && (request.resource.contentType.matches('image/.*')
+                       || request.resource.contentType == 'application/pdf');
+    }
+
+    // Path: profiles/{profileId}/loan-documents/{file}
+    match /profiles/{profileId}/loan-documents/{file} {
       allow read: if request.auth != null && request.auth.uid == profileId;
       allow write: if request.auth != null
                    && request.auth.uid == profileId
@@ -47,6 +67,35 @@ service firebase.storage {
     match /users/{userId}/affiliate/{file} {
       allow read: if request.auth != null && request.auth.uid == userId;
       allow write: if false;
+    }
+
+    // ============================================================
+    // CREDIT REPORTS (private — owner-only read, backend writes)
+    // ============================================================
+    // Credit report PDFs are stored per-user under their profile folder.
+    // The backend API posts reports here. Direct getDownloadURL tokens
+    // are permanent and insecure. Access should go through the
+    // getSecureDocumentUrl Cloud Function which generates short-lived
+    // signed URLs after verifying ownership.
+    // Path: profiles/{userId}/credit-reports/{file}
+    match /profiles/{userId}/credit-reports/{file} {
+      allow read: if request.auth != null && request.auth.uid == userId;
+      allow write: if false; // Backend writes via Admin SDK (bypasses rules)
+    }
+
+    // ============================================================
+    // INSURER CERTIFICATES (admin-managed compliance docs)
+    // ============================================================
+    // Any authenticated user can read (shown on compliance page).
+    // Only admin can upload (max 10 MB, images or PDFs).
+    match /insurers/{insurerId}/certificates/{file} {
+      allow read: if request.auth != null;
+      allow write: if request.auth != null
+                   && (request.auth.token.role == 'admin'
+                       || request.auth.token.email == 'shampene@lebonconsulting.co.za')
+                   && request.resource.size < 10 * 1024 * 1024
+                   && (request.resource.contentType.matches('image/.*')
+                       || request.resource.contentType == 'application/pdf');
     }
 
     // ============================================================

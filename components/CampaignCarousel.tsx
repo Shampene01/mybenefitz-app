@@ -11,7 +11,7 @@ import {
 } from 'react-native';
 import { collection, query, where, orderBy, getDocs } from 'firebase/firestore';
 import { db } from '../lib/firebase';
-import { seedMediaCampaigns } from '../lib/seedCampaigns';
+
 import { Colors } from '../constants/Colors';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
@@ -77,16 +77,8 @@ export default function CampaignCarousel({ onCampaignPress }: CampaignCarouselPr
         ...doc.data(),
       })) as MediaCampaign[];
 
-      if (items.length === 0) {
-        const seeded = await seedMediaCampaigns();
-        if (seeded) {
-          const retry = await getDocs(q);
-          items = retry.docs.map((doc) => ({
-            id: doc.id,
-            ...doc.data(),
-          })) as MediaCampaign[];
-        }
-      }
+      // Seeding is now admin-only via Firestore rules.
+      // If no campaigns exist, the carousel simply won't render.
       setCampaigns(items);
     } catch (error) {
       console.log('Error fetching campaigns:', error);
@@ -216,8 +208,8 @@ const styles = StyleSheet.create({
   },
   cardImage: {
     ...StyleSheet.absoluteFillObject,
-    width: undefined,
-    height: undefined,
+    width: '100%',
+    height: '100%',
   },
   cardImagePlaceholder: {
     ...StyleSheet.absoluteFillObject,

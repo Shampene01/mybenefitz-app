@@ -1,7 +1,9 @@
+import { useEffect } from 'react';
 import { Tabs, useRouter } from 'expo-router';
 import { View, Image, StyleSheet, TouchableOpacity } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useAuth } from '../../contexts/AuthContext';
 import { Colors } from '../../constants/Colors';
 
 function HomeButton() {
@@ -15,6 +17,14 @@ function HomeButton() {
 
 export default function TabLayout() {
   const insets = useSafeAreaInsets();
+  const { user, emailVerified, loading } = useAuth();
+  const router = useRouter();
+
+  useEffect(() => {
+    if (!loading && user && !emailVerified) {
+      router.replace('/verify-email');
+    }
+  }, [user, emailVerified, loading]);
 
   return (
     <Tabs

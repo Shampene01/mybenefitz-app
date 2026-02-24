@@ -12,7 +12,7 @@ import {
   KeyboardAvoidingView,
   Platform,
 } from 'react-native';
-import { useRouter } from 'expo-router';
+import { useRouter, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
@@ -20,10 +20,13 @@ import { updateProfile } from 'firebase/auth';
 import { useAuth } from '../contexts/AuthContext';
 import { auth, storage } from '../lib/firebase';
 import { Colors } from '../constants/Colors';
+import { isValidSAID } from '../lib/productUtils';
+import { fuzzyMatch, verifyWithHomeAffairs } from '../lib/verification';
 
 export default function EditProfileScreen() {
-  const { userProfile, updateUserProfile } = useAuth();
+  const { userProfile, updateUserProfile, isHomeAffairsVerified, isAccountFlagged } = useAuth();
   const router = useRouter();
+  const { returnTo } = useLocalSearchParams<{ returnTo?: string }>();
 
   const [firstName, setFirstName] = useState(userProfile?.firstName || '');
   const [lastName, setLastName] = useState(userProfile?.lastName || '');
@@ -45,6 +48,16 @@ export default function EditProfileScreen() {
   const [photoURL, setPhotoURL] = useState(userProfile?.photoURL || '');
   const [uploading, setUploading] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [verifying, setVerifying] = useState(false);
+
+  // Locked field logic — match webapp: check both verification status and lockedFields array
+  const lockedFields = userProfile?.identityVerification?.lockedFields || [];
+  const isIdLocked = isHomeAffairsVerified || lockedFields.includes('idNumber');
+  const isNameLocked = isHomeAffairsVerified || lockedFields.includes('firstName') || lockedFields.includes('lastName');
+  // Allow retry if previous attempt failed (not yet verified and has a requestedAt)
+  const verificationFailed = !!userProfile?.identityVerification?.requestedAt &&
+    userProfile?.identityVerification?.status !== 'home_affairs_verified';
+  const hasAttemptedVerification = !!userProfile?.identityVerification?.requestedAt && !verificationFailed;
 
   const SA_PROVINCES = [
     'Eastern Cape', 'Free State', 'Gauteng', 'KwaZulu-Natal',
@@ -59,7 +72,7 @@ export default function EditProfileScreen() {
     }
 
     const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      mediaTypes: ['images'],
       allowsEditing: true,
       aspect: [1, 1],
       quality: 0.7,
@@ -131,21 +144,114 @@ export default function EditProfileScreen() {
   };
 
   const handleSave = async () => {
+    if (isAccountFlagged) {
+      Alert.alert('Account Suspended', 'Your account has been flagged. Please contact support.');
+      return;
+    }
+
     if (!firstName.trim() || !lastName.trim()) {
       Alert.alert('Error', 'First name and surname are required.');
       return;
     }
 
+    // Validate SA ID format if provided
+    if (idNumber.trim() && !isValidSAID(idNumber.trim())) {
+      Alert.alert('Invalid ID', 'Please enter a valid 13-digit South African ID number.');
+      return;
+    }
+
     const fullName = `${firstName.trim()} ${lastName.trim()}`;
     setSaving(true);
+
     try {
-      if (auth.currentUser) {
-        await updateProfile(auth.currentUser, { displayName: fullName });
+      // One-shot verification: only verify if ID provided, not already verified, and not already attempted
+      const shouldVerify = idNumber.trim() && !isHomeAffairsVerified && !hasAttemptedVerification;
+
+      let verificationData: Record<string, any> = {};
+
+      if (shouldVerify) {
+        setVerifying(true);
+        try {
+          const idToken = await auth.currentUser?.getIdToken();
+          if (!idToken) throw new Error('Not authenticated');
+
+          const result = await verifyWithHomeAffairs(idNumber.trim(), idToken);
+
+          if (result.success && result.verification) {
+            const { firstName: haFirst, lastName: haLast } = result.verification;
+
+            // Fuzzy match first name
+            const firstMatch = fuzzyMatch(firstName.trim(), haFirst);
+            // Fuzzy match last name
+            const lastMatch = fuzzyMatch(lastName.trim(), haLast);
+
+            if (firstMatch.isFraud || lastMatch.isFraud) {
+              // Flag account — block further transactions
+              await updateUserProfile({
+                accountFlagged: true,
+                accountFlaggedReason: `ID verification name mismatch: Captured "${firstName.trim()} ${lastName.trim()}" vs Home Affairs "${haFirst} ${haLast}"`,
+                accountFlaggedAt: new Date().toISOString(),
+                updatedAt: new Date().toISOString(),
+              });
+              Alert.alert(
+                'Account Flagged',
+                'Your account has been flagged due to a significant name mismatch with Home Affairs records. ' +
+                'All transactions are suspended. Please send a message to +27 64 340 4602 on WhatsApp requesting a review.',
+              );
+              setSaving(false);
+              setVerifying(false);
+              return;
+            }
+
+            if (!firstMatch.matches || !lastMatch.matches) {
+              // Names don't match well but not fraud-level — let them correct
+              Alert.alert(
+                'Name Mismatch',
+                `Name verification failed. Home Affairs records show: "${haFirst} ${haLast}". ` +
+                `Please update your name and surname to match your ID document exactly, then save again.`,
+              );
+              setSaving(false);
+              setVerifying(false);
+              return;
+            }
+
+            // Names match — save profile with the verified names from Home Affairs
+            // Note: The Home Affairs service already writes identityVerification to Firestore
+            verificationData = {
+              firstName: haFirst,
+              lastName: haLast,
+              displayName: `${haFirst} ${haLast}`,
+            };
+            // Update local state with verified names
+            setFirstName(haFirst);
+            setLastName(haLast);
+            setDisplayName(`${haFirst} ${haLast}`);
+          } else {
+            // Verification API failed — will save profile data anyway but warn user
+            verificationData.__warning = result.error || 'Unknown error';
+          }
+        } catch (err) {
+          console.log('[edit-profile] HA verification error:', err);
+          // Don't block save if verification service is unavailable
+        } finally {
+          setVerifying(false);
+        }
       }
+
+      const saveName = verificationData.firstName || firstName.trim();
+      const saveLast = verificationData.lastName || lastName.trim();
+      const saveFullName = `${saveName} ${saveLast}`;
+
+      if (auth.currentUser) {
+        await updateProfile(auth.currentUser, { displayName: saveFullName });
+      }
+
+      // Strip internal flags before saving to Firestore
+      const { __warning, ...saveVerificationData } = verificationData;
       await updateUserProfile({
-        firstName: firstName.trim(),
-        lastName: lastName.trim(),
-        displayName: fullName,
+        firstName: saveName,
+        lastName: saveLast,
+        displayName: saveFullName,
         phoneNumber: phoneNumber.trim(),
         whatsappNumber: whatsappNumber.trim(),
         idNumber: idNumber.trim(),
@@ -165,9 +271,24 @@ export default function EditProfileScreen() {
           netSalary: netSalary ? Number(netSalary) : '',
         },
         updatedAt: new Date().toISOString(),
+        ...saveVerificationData,
       });
-      Alert.alert('Success', 'Profile updated successfully!', [
-        { text: 'OK', onPress: () => router.back() },
+
+      const navigateBack = () => {
+        if (returnTo) {
+          router.replace(returnTo as any);
+        } else {
+          router.back();
+        }
+      };
+
+      const successMessage = verificationData.__warning
+        ? `Profile saved. ID verification could not be completed: ${verificationData.__warning}`
+        : shouldVerify && verificationData.firstName
+          ? 'Profile saved and identity verified with Home Affairs! Your name, surname, and ID number are now locked.'
+          : 'Profile updated successfully!';
+      Alert.alert('Success', successMessage, [
+        { text: 'OK', onPress: navigateBack },
       ]);
     } catch (error) {
       console.log('Save error:', error);
@@ -203,16 +324,72 @@ export default function EditProfileScreen() {
           <Text style={styles.changePhotoText}>Tap to change photo</Text>
         </View>
 
+        {/* Account Flagged Banner */}
+        {isAccountFlagged && (
+          <View style={styles.flagBanner}>
+            <Ionicons name="alert-circle" size={22} color="#dc2626" />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.flagBannerTitle}>Account Flagged — Transactions Suspended</Text>
+              <Text style={styles.flagBannerDesc}>
+                Your account has been flagged due to a name mismatch during identity verification. Please contact support on WhatsApp at +27 64 340 4602.
+              </Text>
+            </View>
+          </View>
+        )}
+
+        {/* Verification Status Banner */}
+        {isHomeAffairsVerified && (
+          <View style={styles.verifiedBanner}>
+            <Ionicons name="shield-checkmark" size={22} color="#15803d" />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.verifiedBannerTitle}>Identity Verified with Home Affairs</Text>
+              <Text style={styles.verifiedBannerDesc}>
+                Your ID number, name, and surname have been verified and are now locked. You earn 10 points for Personal Details!
+              </Text>
+            </View>
+          </View>
+        )}
+
+        {/* Verifying Indicator */}
+        {verifying && (
+          <View style={styles.verifyingBanner}>
+            <ActivityIndicator size="small" color={Colors.primary.blue} />
+            <Text style={styles.verifyingText}>Verifying your identity with Home Affairs...</Text>
+          </View>
+        )}
+
         {/* Personal Details */}
         <View style={styles.formSection}>
-          <Text style={styles.sectionLabel}>Personal Details</Text>
+          <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+            <Text style={[styles.sectionLabel, { marginBottom: 0 }]}>Personal Details</Text>
+            {isNameLocked && (
+              <View style={styles.lockedBadge}>
+                <Ionicons name="lock-closed" size={12} color="#15803d" />
+                <Text style={styles.lockedBadgeText}>Verified & Locked</Text>
+              </View>
+            )}
+          </View>
           <View style={styles.inputGroup}>
             <Text style={styles.label}>First Name *</Text>
-            <TextInput style={styles.input} value={firstName} onChangeText={(v) => { setFirstName(v); setDisplayName(`${v} ${lastName}`.trim()); }} placeholder="Enter your first name" placeholderTextColor={Colors.text.light} />
+            {isNameLocked ? (
+              <View style={styles.disabledInput}>
+                <Text style={styles.disabledText}>{firstName}</Text>
+                <Ionicons name="lock-closed" size={16} color="#15803d" />
+              </View>
+            ) : (
+              <TextInput style={styles.input} value={firstName} onChangeText={(v) => { setFirstName(v); setDisplayName(`${v} ${lastName}`.trim()); }} placeholder="Enter your first name" placeholderTextColor={Colors.text.light} />
+            )}
           </View>
           <View style={styles.inputGroup}>
             <Text style={styles.label}>Surname *</Text>
-            <TextInput style={styles.input} value={lastName} onChangeText={(v) => { setLastName(v); setDisplayName(`${firstName} ${v}`.trim()); }} placeholder="Enter your surname" placeholderTextColor={Colors.text.light} />
+            {isNameLocked ? (
+              <View style={styles.disabledInput}>
+                <Text style={styles.disabledText}>{lastName}</Text>
+                <Ionicons name="lock-closed" size={16} color="#15803d" />
+              </View>
+            ) : (
+              <TextInput style={styles.input} value={lastName} onChangeText={(v) => { setLastName(v); setDisplayName(`${firstName} ${v}`.trim()); }} placeholder="Enter your surname" placeholderTextColor={Colors.text.light} />
+            )}
           </View>
           <View style={styles.inputGroup}>
             <Text style={styles.label}>Email</Text>
@@ -223,7 +400,14 @@ export default function EditProfileScreen() {
           </View>
           <View style={styles.inputGroup}>
             <Text style={styles.label}>SA ID Number</Text>
-            <TextInput style={styles.input} value={idNumber} onChangeText={setIdNumber} placeholder="e.g. 9001015009087" placeholderTextColor={Colors.text.light} keyboardType="number-pad" maxLength={13} />
+            {isIdLocked ? (
+              <View style={styles.disabledInput}>
+                <Text style={styles.disabledText}>{idNumber}</Text>
+                <Ionicons name="lock-closed" size={16} color="#15803d" />
+              </View>
+            ) : (
+              <TextInput style={styles.input} value={idNumber} onChangeText={setIdNumber} placeholder="e.g. 9001015009087" placeholderTextColor={Colors.text.light} keyboardType="number-pad" maxLength={13} />
+            )}
           </View>
           <View style={styles.inputGroup}>
             <Text style={styles.label}>Phone Number</Text>
@@ -472,5 +656,82 @@ const styles = StyleSheet.create({
   },
   bottomPadding: {
     height: 24,
+  },
+  flagBanner: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 12,
+    marginHorizontal: 16,
+    marginTop: 12,
+    backgroundColor: '#fef2f2',
+    borderWidth: 1,
+    borderColor: '#fecaca',
+    borderRadius: 12,
+    padding: 16,
+  },
+  flagBannerTitle: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#dc2626',
+  },
+  flagBannerDesc: {
+    fontSize: 13,
+    color: '#991b1b',
+    marginTop: 4,
+    lineHeight: 19,
+  },
+  verifiedBanner: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 12,
+    marginHorizontal: 16,
+    marginTop: 12,
+    backgroundColor: '#f0fdf4',
+    borderWidth: 1,
+    borderColor: '#bbf7d0',
+    borderRadius: 12,
+    padding: 16,
+  },
+  verifiedBannerTitle: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#15803d',
+  },
+  verifiedBannerDesc: {
+    fontSize: 13,
+    color: '#166534',
+    marginTop: 4,
+    lineHeight: 19,
+  },
+  verifyingBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    marginHorizontal: 16,
+    marginTop: 12,
+    backgroundColor: '#eff6ff',
+    borderWidth: 1,
+    borderColor: '#bfdbfe',
+    borderRadius: 12,
+    padding: 14,
+  },
+  verifyingText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: Colors.primary.blue,
+  },
+  lockedBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: '#f0fdf4',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 8,
+  },
+  lockedBadgeText: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: '#15803d',
   },
 });

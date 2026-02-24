@@ -80,6 +80,29 @@ export default function CreditScreen() {
         </View>
       </View>
 
+      {/* Assessment CTA */}
+      <View style={styles.ctaCard}>
+        <View style={styles.ctaBadge}>
+          <Text style={styles.ctaBadgeText}>STARTING POINT</Text>
+        </View>
+        <Text style={styles.ctaTitle}>Credit Report Assessment</Text>
+        <Text style={styles.ctaDesc}>
+          A quick, secure credit health check that helps us understand what needs attention before we recommend any next steps.
+        </Text>
+        <View style={styles.ctaPriceRow}>
+          <Text style={styles.ctaPrice}>R99</Text>
+          <Text style={styles.ctaPriceLabel}>once-off fee</Text>
+        </View>
+        <TouchableOpacity
+          style={styles.ctaButton}
+          activeOpacity={0.8}
+          onPress={() => router.push('/credit-apply' as any)}
+        >
+          <Ionicons name="shield-checkmark" size={20} color="#fff" />
+          <Text style={styles.ctaButtonText}>Apply Now</Text>
+        </TouchableOpacity>
+      </View>
+
       {/* What it is / is not */}
       <View style={styles.section}>
         <View style={styles.comparisonRow}>
@@ -134,29 +157,6 @@ export default function CreditScreen() {
             <Text style={styles.serviceText}>{svc.text}</Text>
           </View>
         ))}
-      </View>
-
-      {/* Assessment CTA */}
-      <View style={styles.ctaCard}>
-        <View style={styles.ctaBadge}>
-          <Text style={styles.ctaBadgeText}>STARTING POINT</Text>
-        </View>
-        <Text style={styles.ctaTitle}>Credit Report Assessment</Text>
-        <Text style={styles.ctaDesc}>
-          A quick, secure credit health check that helps us understand what needs attention before we recommend any next steps.
-        </Text>
-        <View style={styles.ctaPriceRow}>
-          <Text style={styles.ctaPrice}>R99</Text>
-          <Text style={styles.ctaPriceLabel}>once-off fee</Text>
-        </View>
-        <TouchableOpacity
-          style={styles.ctaButton}
-          activeOpacity={0.8}
-          onPress={() => router.push('/credit-apply' as any)}
-        >
-          <Ionicons name="shield-checkmark" size={20} color="#fff" />
-          <Text style={styles.ctaButtonText}>Apply Now</Text>
-        </TouchableOpacity>
       </View>
 
       {/* Footer */}

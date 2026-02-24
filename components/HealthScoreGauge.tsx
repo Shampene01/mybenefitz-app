@@ -29,9 +29,11 @@ function useMilestones() {
   const hasAddress = !!(userProfile?.address?.street && userProfile?.address?.suburb && userProfile?.address?.city && userProfile?.address?.province);
   const hasIncome = !!(userProfile?.income?.employerName && userProfile?.income?.grossSalary);
   const hasFica = !!(userProfile?.fica?.idDocument && userProfile?.fica?.proofOfAddress && userProfile?.fica?.bankConfirmation);
+  const isHomeAffairsVerified = userProfile?.identityVerification?.status === 'home_affairs_verified';
 
   const milestones: Milestone[] = [
-    { label: 'Personal details', points: 10, completed: hasPersonal },
+    { label: 'Personal details', points: isHomeAffairsVerified ? 10 : 5, completed: hasPersonal },
+    { label: 'ID verified by Home Affairs', points: 5, completed: isHomeAffairsVerified },
     { label: 'Physical address', points: 5, completed: hasAddress },
     { label: 'Income details', points: 5, completed: hasIncome },
     { label: 'FICA documents', points: 5, completed: hasFica },
@@ -138,6 +140,7 @@ export function MilestonesList({ onNavigate }: { onNavigate?: (route: string) =>
 
   const routes: Record<string, string> = {
     'Personal details': '/edit-profile',
+    'ID verified by Home Affairs': '/edit-profile',
     'Physical address': '/edit-profile',
     'Income details': '/edit-profile',
     'FICA documents': '/fica-upload',

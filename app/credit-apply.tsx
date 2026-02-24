@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useRef } from 'react';
 import {
   View,
   Text,
@@ -10,66 +10,272 @@ import {
   ActivityIndicator,
   KeyboardAvoidingView,
   Platform,
+  Linking,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
+import { doc, setDoc, collection } from 'firebase/firestore';
+import { db } from '../lib/firebase';
 import { useAuth } from '../contexts/AuthContext';
 import { Colors } from '../constants/Colors';
+import ProfileGuard from '../components/ProfileGuard';
+import {
+  isValidSAID,
+  extractDobFromId,
+  normalizePhone,
+  sendWhatsAppOtp,
+  verifyWhatsAppOtp,
+  generatePaymentLink,
+  pollPaymentStatus,
+  generateClientId,
+  CONSENT_FORM_URL,
+} from '../lib/productUtils';
+import type { OtpPurpose } from '../lib/productUtils';
 
 const TOTAL_STEPS = 5;
+const CREDIT_PRICE = 79;
+const OTP_PURPOSE: OtpPurpose = 'credit_report';
 
 const stepLabels = [
   'ID Number',
-  'POPIA Consent',
-  'Terms & Conditions',
+  'Consent',
+  'Verify OTP',
   'Payment',
   'Complete',
 ];
 
 export default function CreditApplyScreen() {
   const router = useRouter();
-  const { userProfile, updateUserProfile } = useAuth();
+  const { user, userProfile, updateUserProfile } = useAuth();
 
   const [step, setStep] = useState(1);
   const [idNumber, setIdNumber] = useState(userProfile?.idNumber || '');
   const [popiaAccepted, setPopiaAccepted] = useState(false);
-  const [termsAccepted, setTermsAccepted] = useState(false);
+  const [creditConsent, setCreditConsent] = useState(false);
   const [processing, setProcessing] = useState(false);
+
+  // OTP state
+  const [otpId, setOtpId] = useState('');
+  const [otpInput, setOtpInput] = useState(['', '', '', '', '', '']);
+  const otpRefs = useRef<(TextInput | null)[]>([]);
+
+  // Payment state
+  const [paymentUrl, setPaymentUrl] = useState('');
+  const [paymentId, setPaymentId] = useState('');
+  const [paymentStatus, setPaymentStatus] = useState<'pending' | 'polling' | 'complete' | 'cancelled' | ''>('');
 
   const canProceed = () => {
     switch (step) {
-      case 1: return idNumber.length === 13;
-      case 2: return popiaAccepted;
-      case 3: return termsAccepted;
+      case 1: return idNumber.length === 13 && isValidSAID(idNumber);
+      case 2: return popiaAccepted && creditConsent;
+      case 3: return otpInput.join('').length === 6;
       case 4: return true;
       default: return false;
     }
   };
 
-  const handleNext = async () => {
-    if (step === 1 && idNumber.length !== 13) {
+  // ── Step 1 → 2: Save ID
+  const handleIdSubmit = async () => {
+    if (!isValidSAID(idNumber)) {
       Alert.alert('Invalid ID', 'Please enter a valid 13-digit South African ID number.');
       return;
     }
-    if (step === 4) {
-      setProcessing(true);
-      try {
-        await updateUserProfile({
-          idNumber,
-          updatedAt: new Date().toISOString(),
-        });
-        // Simulate payment processing
-        await new Promise((resolve) => setTimeout(resolve, 2000));
-        setStep(5);
-      } catch {
-        Alert.alert('Error', 'Something went wrong. Please try again.');
-      } finally {
-        setProcessing(false);
-      }
+    setProcessing(true);
+    try {
+      await updateUserProfile({ idNumber, updatedAt: new Date().toISOString() });
+      setStep(2);
+    } catch {
+      Alert.alert('Error', 'Failed to save ID number.');
+    } finally {
+      setProcessing(false);
+    }
+  };
+
+  // ── Step 2 → 3: Send OTP
+  const handleConsentSubmit = async () => {
+    if (!popiaAccepted || !creditConsent) {
+      Alert.alert('Consent Required', 'Please accept both consent checkboxes.');
       return;
     }
-    setStep((s) => s + 1);
+    const phone = userProfile?.phoneNumber || userProfile?.whatsappNumber || '';
+    setProcessing(true);
+    try {
+      const result = await sendWhatsAppOtp(phone, OTP_PURPOSE);
+      if (result.success) {
+        setOtpId(result.otpId);
+        setStep(3);
+      } else {
+        Alert.alert('OTP Error', result.message || 'Failed to send OTP.');
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Failed to send OTP.';
+      Alert.alert('Error', msg);
+    } finally {
+      setProcessing(false);
+    }
+  };
+
+  const handleResendOtp = async () => {
+    const phone = userProfile?.phoneNumber || userProfile?.whatsappNumber || '';
+    setProcessing(true);
+    try {
+      const result = await sendWhatsAppOtp(phone, OTP_PURPOSE);
+      if (result.success) {
+        setOtpId(result.otpId);
+        setOtpInput(['', '', '', '', '', '']);
+        Alert.alert('OTP Sent', 'A new OTP has been sent to your WhatsApp.');
+      } else {
+        Alert.alert('Error', result.message || 'Failed to resend OTP.');
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Failed to resend OTP.';
+      Alert.alert('Error', msg);
+    } finally {
+      setProcessing(false);
+    }
+  };
+
+  // ── Step 3 → 4: Verify OTP + create records + generate payment
+  const handleOtpSubmit = async () => {
+    const entered = otpInput.join('');
+    if (entered.length !== 6) {
+      Alert.alert('Invalid OTP', 'Please enter the full 6-digit OTP.');
+      return;
+    }
+    if (!user || !userProfile) return;
+
+    setProcessing(true);
+    try {
+      // 1. Verify OTP
+      const verifyResult = await verifyWhatsAppOtp(otpId, entered);
+      if (!verifyResult.verified) {
+        const remaining = verifyResult.attemptsRemaining;
+        Alert.alert('Invalid OTP',
+          remaining !== undefined
+            ? `${verifyResult.message} (${remaining} attempts remaining)`
+            : verifyResult.message || 'Invalid OTP.',
+        );
+        setProcessing(false);
+        return;
+      }
+
+      const uid = user.uid;
+      const now = new Date().toISOString();
+      const fullName = `${userProfile.firstName || ''} ${userProfile.lastName || ''}`.trim() || userProfile.displayName;
+      const surname = userProfile.lastName || userProfile.displayName.split(' ').pop() || '';
+      const phone = normalizePhone(userProfile.phoneNumber || userProfile.whatsappNumber || '');
+
+      await updateUserProfile({
+        idNumber,
+        fullName,
+        lastName: surname,
+        phoneNumber: phone,
+        popiaConsent: true,
+        popiaConsentTimestamp: now,
+        creditClinicAppliedAt: now,
+        updatedAt: now,
+      } as Record<string, unknown>);
+
+      // 2. Save consent
+      const consentRef = doc(collection(db, 'profiles', uid, 'consents'));
+      await setDoc(consentRef, {
+        consentId: consentRef.id,
+        consentType: 'credit_report',
+        fullName, surname, idNumber,
+        popiaConsent: true, creditReportConsent: true,
+        whatsAppContactConsent: true,
+        otpVerified: true, otpCode: otpId,
+        otpVerifiedAt: verifyResult.verifiedAt || now,
+        consentGrantedAt: now, channel: 'mobile' as const, createdAt: now,
+      });
+
+      // 3. Consent PDF (non-blocking)
+      const clientId = generateClientId();
+      try {
+        await fetch(CONSENT_FORM_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            client_id: clientId,
+            wa_id: verifyResult.waId || phone.replace('+', ''),
+            id_number: idNumber,
+            full_name: fullName,
+            cell_number: phone,
+            otp_code: entered,
+            otp_verified_at: verifyResult.verifiedAt || now,
+            message_id: `mobile-otp-${Date.now()}`,
+            purpose: 'Credit Clinic Assessment',
+            form_type: 'credit_check',
+          }),
+        });
+      } catch { /* non-blocking */ }
+
+      // 4. clientProducts record
+      const productRef = doc(collection(db, 'clientProducts'));
+      const reference = `CR-${uid.slice(0, 8)}-${consentRef.id}`;
+      await setDoc(productRef, {
+        productApplicationId: productRef.id,
+        productType: 'credit_repair',
+        productName: 'Credit Repair',
+        productDescription: 'Credit Report Assessment & Analysis',
+        status: 'pending_payment', statusLabel: 'Pending Payment',
+        idNumber, waId: verifyResult.waId || userProfile.waId || null,
+        uid, email: userProfile.email, clientName: fullName,
+        channel: 'mobile', reference, consentId: consentRef.id,
+        referredBy: (userProfile as unknown as { referredBy?: string }).referredBy || null,
+        paymentId: null, amount: CREDIT_PRICE,
+        createdAt: now, updatedAt: now, paidAt: null, completedAt: null,
+      });
+
+      // 5. Generate payment link
+      try {
+        const payData = await generatePaymentLink({
+          amount: CREDIT_PRICE,
+          itemName: 'Credit Report Assessment',
+          itemDescription: 'MyBenefitz Credit Clinic - Credit Report & Analysis',
+          reference,
+          productType: 'credit_repair',
+        });
+        if (payData.paymentUrl) setPaymentUrl(payData.paymentUrl);
+        if (payData.paymentId) {
+          setPaymentId(payData.paymentId);
+          setPaymentStatus('pending');
+        }
+      } catch (payErr) {
+        console.warn('[CreditApply] Payment link failed:', payErr);
+      }
+
+      setStep(4);
+    } catch (err) {
+      console.error('[CreditApply] Submit failed:', err);
+      Alert.alert('Error', 'Something went wrong. Please try again.');
+    } finally {
+      setProcessing(false);
+    }
+  };
+
+  // ── Payment
+  const handleOpenPayment = async () => {
+    if (!paymentUrl) return;
+    await Linking.openURL(paymentUrl);
+
+    if (!paymentId) return;
+    setPaymentStatus('polling');
+    const result = await pollPaymentStatus(paymentId);
+    if (result.complete) {
+      setPaymentStatus('complete');
+      setStep(5);
+    } else {
+      setPaymentStatus(result.status === 'CANCELLED' ? 'cancelled' : 'pending');
+    }
+  };
+
+  const handleNext = async () => {
+    if (step === 1) return handleIdSubmit();
+    if (step === 2) return handleConsentSubmit();
+    if (step === 3) return handleOtpSubmit();
+    if (step === 4) return handleOpenPayment();
   };
 
   const handleBack = () => {
@@ -80,7 +286,23 @@ export default function CreditApplyScreen() {
     }
   };
 
+  const handleOtpChange = (index: number, value: string) => {
+    if (!/^\d*$/.test(value)) return;
+    const newOtp = [...otpInput];
+    newOtp[index] = value.slice(-1);
+    setOtpInput(newOtp);
+    if (value && index < 5) otpRefs.current[index + 1]?.focus();
+  };
+
+  const maskedPhone = (() => {
+    const ph = userProfile?.phoneNumber || userProfile?.whatsappNumber || '';
+    return ph ? ph.slice(0, 3) + '****' + ph.slice(-3) : '';
+  })();
+
+  const dobInfo = isValidSAID(idNumber) ? extractDobFromId(idNumber) : null;
+
   return (
+    <ProfileGuard>
     <SafeAreaView style={styles.container} edges={['bottom']}>
     <KeyboardAvoidingView style={styles.innerContainer} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
       {/* Progress */}
@@ -117,27 +339,27 @@ export default function CreditApplyScreen() {
               maxLength={13}
             />
             <Text style={styles.inputHint}>{idNumber.length}/13 digits</Text>
+            {dobInfo && (
+              <View style={styles.paymentNote}>
+                <Ionicons name="information-circle" size={16} color={Colors.primary.blue} />
+                <Text style={styles.paymentNoteText}>DOB: {dobInfo.dob} • Age: {dobInfo.age}</Text>
+              </View>
+            )}
           </View>
         )}
 
-        {/* ── Step 2: POPIA Consent ── */}
+        {/* ── Step 2: Consent ── */}
         {step === 2 && (
           <View style={styles.stepContainer}>
             <View style={styles.stepIconCircle}>
               <Ionicons name="lock-closed" size={28} color={Colors.primary.blue} />
             </View>
-            <Text style={styles.stepTitle}>POPIA Consent</Text>
-            <Text style={styles.stepDesc}>Permission for us to process your information for this service.</Text>
+            <Text style={styles.stepTitle}>Consent &amp; Disclosure</Text>
+            <Text style={styles.stepDesc}>Please accept both consents to proceed.</Text>
 
             <View style={styles.consentCard}>
               <Text style={styles.consentText}>
-                I hereby consent to MyBenefitz (Pty) Ltd processing my personal information, including my identity number and credit information, for the purposes of providing the MyCreditClinic Credit Report Assessment service.
-              </Text>
-              <Text style={styles.consentText}>
-                This consent is given in accordance with the Protection of Personal Information Act (POPIA). I understand that my information will be processed securely and only for the stated purpose.
-              </Text>
-              <Text style={styles.consentText}>
-                I may withdraw my consent at any time by contacting support@mybenefitz.co.za, subject to legal and contractual obligations.
+                I consent to MyBenefitz processing my personal information in accordance with POPIA for the purpose of obtaining and analysing my credit report.
               </Text>
             </View>
 
@@ -147,36 +369,60 @@ export default function CreditApplyScreen() {
               </View>
               <Text style={styles.checkboxLabel}>I provide my POPIA consent</Text>
             </TouchableOpacity>
+
+            <View style={[styles.consentCard, { marginTop: 16 }]}>
+              <Text style={styles.consentText}>
+                I authorise MyBenefitz to access my credit report from the VCCB credit bureau on my behalf, including credit score, account history, and payment records.
+              </Text>
+            </View>
+
+            <TouchableOpacity style={styles.checkboxRow} onPress={() => setCreditConsent(!creditConsent)} activeOpacity={0.7}>
+              <View style={[styles.checkbox, creditConsent && styles.checkboxChecked]}>
+                {creditConsent && <Ionicons name="checkmark" size={16} color="#fff" />}
+              </View>
+              <Text style={styles.checkboxLabel}>I authorise credit report access</Text>
+            </TouchableOpacity>
+
+            <View style={[styles.paymentNote, { marginTop: 16 }]}>
+              <Ionicons name="information-circle" size={16} color={Colors.primary.blue} />
+              <Text style={styles.paymentNoteText}>A once-off fee of R{CREDIT_PRICE}.00 is payable after OTP verification.</Text>
+            </View>
           </View>
         )}
 
-        {/* ── Step 3: Terms & Conditions ── */}
+        {/* ── Step 3: OTP Verification ── */}
         {step === 3 && (
           <View style={styles.stepContainer}>
             <View style={styles.stepIconCircle}>
-              <Ionicons name="document-text" size={28} color={Colors.primary.blue} />
+              <Ionicons name="chatbubble-ellipses" size={28} color={Colors.primary.blue} />
             </View>
-            <Text style={styles.stepTitle}>Terms & Conditions</Text>
-            <Text style={styles.stepDesc}>Please read and accept the service terms.</Text>
+            <Text style={styles.stepTitle}>Verify Your Identity</Text>
+            <Text style={styles.stepDesc}>Enter the 6-digit OTP sent to your WhatsApp {maskedPhone}</Text>
 
-            <View style={styles.termsCard}>
-              <TermItem num="1" text="No guaranteed removals: We cannot remove valid/accurate listings or guarantee any score outcome." />
-              <TermItem num="2" text="Truthful information: You confirm that all information you provide is true, accurate, and yours to share." />
-              <TermItem num="3" text="ID verification: You consent to us verifying your identity and information. If the ID does not belong to you or fraud is suspected, your access may be blocked." />
-              <TermItem num="4" text="Fraud/impersonation: If you provide false details, impersonate someone, or submit fraudulent documents, you may forfeit your payment, be blocked, and the matter may be escalated where appropriate." />
-              <TermItem num="5" text="Assessment fee is payable: The R99 Credit Report Assessment is a once-off fee for the assessment service and remains payable even if you decline further services afterward." />
-              <TermItem num="6" text="Your responsibility: You are responsible for providing required documents and responding to requests; delays in response may delay outcomes." />
-              <TermItem num="7" text="Evidence-based disputes only: Where disputes are submitted, they will be done only where evidence supports the correction of inaccurate information." />
-              <TermItem num="8" text="Not debt counselling: We are not a debt counselling company and we do not place clients under debt counselling / debt review." />
-              <TermItem num="9" text="Third-party timelines: Where third parties are involved (credit bureaus, creditors, attorneys), outcomes and timelines are influenced by their processes. We can track and follow up, but we can't control their turnaround time." />
-              <TermItem num="10" text="Consent & privacy: You consent to processing your data for this service in line with POPIA, and you understand we use secure channels to the extent possible; you should protect your WhatsApp device and messages." />
+            <View style={styles.otpRow}>
+              {otpInput.map((digit, i) => (
+                <TextInput
+                  key={i}
+                  ref={(el) => { otpRefs.current[i] = el; }}
+                  style={styles.otpBox}
+                  value={digit}
+                  onChangeText={(v) => handleOtpChange(i, v)}
+                  onKeyPress={(e) => {
+                    if (e.nativeEvent.key === 'Backspace' && !otpInput[i] && i > 0) {
+                      otpRefs.current[i - 1]?.focus();
+                    }
+                  }}
+                  keyboardType="number-pad"
+                  maxLength={1}
+                  textAlign="center"
+                />
+              ))}
             </View>
 
-            <TouchableOpacity style={styles.checkboxRow} onPress={() => setTermsAccepted(!termsAccepted)} activeOpacity={0.7}>
-              <View style={[styles.checkbox, termsAccepted && styles.checkboxChecked]}>
-                {termsAccepted && <Ionicons name="checkmark" size={16} color="#fff" />}
-              </View>
-              <Text style={styles.checkboxLabel}>I accept the Terms & Conditions</Text>
+            <Text style={[styles.inputHint, { marginTop: 12 }]}>OTP is valid for 10 minutes. Check your WhatsApp.</Text>
+
+            <TouchableOpacity onPress={handleResendOtp} disabled={processing} style={{ marginTop: 12 }}>
+              <Text style={{ color: Colors.primary.blue, fontWeight: '600', fontSize: 14 }}>Resend OTP</Text>
             </TouchableOpacity>
           </View>
         )}
@@ -187,25 +433,39 @@ export default function CreditApplyScreen() {
             <View style={styles.stepIconCircle}>
               <Ionicons name="card" size={28} color={Colors.primary.blue} />
             </View>
-            <Text style={styles.stepTitle}>Payment</Text>
+            <Text style={styles.stepTitle}>Complete Payment</Text>
             <Text style={styles.stepDesc}>Credit Report Assessment — once-off fee</Text>
 
             <View style={styles.paymentSummary}>
               <View style={styles.paymentRow}>
                 <Text style={styles.paymentLabel}>Credit Report Assessment</Text>
-                <Text style={styles.paymentAmount}>R99.00</Text>
+                <Text style={styles.paymentAmount}>R{CREDIT_PRICE}.00</Text>
               </View>
               <View style={styles.paymentDivider} />
               <View style={styles.paymentRow}>
                 <Text style={styles.paymentTotalLabel}>Total</Text>
-                <Text style={styles.paymentTotalAmount}>R99.00</Text>
+                <Text style={styles.paymentTotalAmount}>R{CREDIT_PRICE}.00</Text>
               </View>
             </View>
 
-            <View style={styles.paymentNote}>
-              <Ionicons name="shield-checkmark" size={16} color={Colors.status.success} />
-              <Text style={styles.paymentNoteText}>Secure payment processing. Your card details are never stored.</Text>
-            </View>
+            {paymentStatus === 'polling' && (
+              <View style={[styles.paymentNote, { backgroundColor: Colors.primary.blue + '10' }]}>
+                <ActivityIndicator size="small" color={Colors.primary.blue} />
+                <Text style={styles.paymentNoteText}>Waiting for payment confirmation...</Text>
+              </View>
+            )}
+            {paymentStatus === 'cancelled' && (
+              <View style={[styles.paymentNote, { backgroundColor: Colors.status.error + '10' }]}>
+                <Ionicons name="close-circle" size={16} color={Colors.status.error} />
+                <Text style={styles.paymentNoteText}>Payment was cancelled. You can try again.</Text>
+              </View>
+            )}
+            {paymentStatus !== 'polling' && (
+              <View style={styles.paymentNote}>
+                <Ionicons name="shield-checkmark" size={16} color={Colors.status.success} />
+                <Text style={styles.paymentNoteText}>Secure PayFast payment. Your card details are never stored.</Text>
+              </View>
+            )}
           </View>
         )}
 
@@ -215,9 +475,9 @@ export default function CreditApplyScreen() {
             <View style={[styles.stepIconCircle, { backgroundColor: Colors.status.success + '15' }]}>
               <Ionicons name="checkmark-circle" size={36} color={Colors.status.success} />
             </View>
-            <Text style={styles.stepTitle}>Application Submitted!</Text>
+            <Text style={styles.stepTitle}>{paymentStatus === 'complete' ? 'Payment Successful!' : 'Application Submitted!'}</Text>
             <Text style={styles.stepDesc}>
-              Your Credit Report Assessment has been initiated. We'll process your assessment and share it with you via WhatsApp, along with your recommended next steps.
+              Your Credit Report Assessment is now active. We'll process your assessment and share it with you via WhatsApp.
             </Text>
 
             <View style={styles.completeCard}>
@@ -253,7 +513,9 @@ export default function CreditApplyScreen() {
               <ActivityIndicator color="#fff" size="small" />
             ) : (
               <>
-                <Text style={styles.nextBtnText}>{step === 4 ? 'Pay R99' : 'Continue'}</Text>
+                <Text style={styles.nextBtnText}>
+                  {step === 2 ? 'Accept & Send OTP' : step === 3 ? 'Verify OTP' : step === 4 ? `Pay R${CREDIT_PRICE}` : 'Continue'}
+                </Text>
                 <Ionicons name="arrow-forward" size={18} color="#fff" />
               </>
             )}
@@ -262,6 +524,7 @@ export default function CreditApplyScreen() {
       )}
     </KeyboardAvoidingView>
     </SafeAreaView>
+    </ProfileGuard>
   );
 }
 
@@ -489,6 +752,24 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     color: Colors.primary.blue,
   },
+  otpRow: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    gap: 10,
+    width: '100%',
+    marginBottom: 8,
+  },
+  otpBox: {
+    width: 46,
+    height: 54,
+    backgroundColor: '#fff',
+    borderRadius: 10,
+    borderWidth: 1.5,
+    borderColor: Colors.border,
+    fontSize: 22,
+    fontWeight: '700',
+    color: Colors.text.primary,
+  },
   paymentNote: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -497,6 +778,7 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.status.success + '10',
     padding: 12,
     borderRadius: 10,
+    marginTop: 12,
   },
   paymentNoteText: {
     flex: 1,

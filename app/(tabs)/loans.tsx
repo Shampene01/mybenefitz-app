@@ -1,4 +1,5 @@
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity } from 'react-native';
+import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { Colors } from '../../constants/Colors';
 
@@ -10,6 +11,8 @@ const loanTypes = [
 ];
 
 export default function LoansScreen() {
+  const router = useRouter();
+
   return (
     <ScrollView style={styles.container} showsVerticalScrollIndicator={false}>
       <View style={styles.header}>
@@ -23,7 +26,7 @@ export default function LoansScreen() {
         </View>
         <Text style={styles.emptyTitle}>No Active Loans</Text>
         <Text style={styles.emptyText}>Apply for a loan and track your application here</Text>
-        <TouchableOpacity style={styles.applyButton}>
+        <TouchableOpacity style={styles.applyButton} onPress={() => router.push('/loan-apply' as any)}>
           <Ionicons name="add" size={20} color="#fff" />
           <Text style={styles.applyButtonText}>Apply for Loan</Text>
         </TouchableOpacity>
@@ -32,7 +35,7 @@ export default function LoansScreen() {
       <View style={styles.section}>
         <Text style={styles.sectionTitle}>Available Loan Types</Text>
         {loanTypes.map((loan, index) => (
-          <TouchableOpacity key={index} style={styles.loanCard}>
+          <TouchableOpacity key={index} style={styles.loanCard} onPress={() => router.push('/loan-apply' as any)}>
             <Text style={styles.loanIcon}>{loan.icon}</Text>
             <View style={styles.loanInfo}>
               <Text style={styles.loanName}>{loan.name}</Text>

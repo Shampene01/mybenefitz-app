@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   View,
   Text,
@@ -12,16 +12,30 @@ import {
   Alert,
   Image,
 } from 'react-native';
-import { Link, useRouter } from 'expo-router';
+import { Link, useRouter, useLocalSearchParams } from 'expo-router';
+import { FontAwesome } from '@expo/vector-icons';
 import { useAuth } from '../../contexts/AuthContext';
 import { Colors } from '../../constants/Colors';
+import { storeReferralCode } from '../../lib/referral';
 
 export default function LoginScreen() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const { signIn } = useAuth();
+  const [isGoogleLoading, setGoogleLoading] = useState(false);
+  const [isFacebookLoading, setFacebookLoading] = useState(false);
+  const { signIn, signInWithGoogle, signInWithFacebook } = useAuth();
   const router = useRouter();
+  const params = useLocalSearchParams();
+
+  useEffect(() => {
+    const refCode = params?.ref;
+    if (!refCode) return;
+    const normalized = Array.isArray(refCode) ? refCode[0] : refCode;
+    if (normalized) storeReferralCode(normalized);
+  }, [params]);
+
+  const socialButtonsDisabled = useMemo(() => isGoogleLoading || isFacebookLoading, [isGoogleLoading, isFacebookLoading]);
 
   const handleLogin = async () => {
     if (!email || !password) {
@@ -31,12 +45,48 @@ export default function LoginScreen() {
 
     setIsLoading(true);
     try {
-      await signIn(email, password);
-      router.replace('/(tabs)');
+      const credential = await signIn(email, password);
+      if (!credential.user.emailVerified) {
+        router.replace('/verify-email');
+      } else {
+        router.replace('/(tabs)');
+      }
     } catch (error: any) {
       Alert.alert('Login Failed', error.message || 'Please check your credentials');
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  const handleGoogleSignIn = async () => {
+    setGoogleLoading(true);
+    try {
+      const credential = await signInWithGoogle();
+      if (!credential.user.emailVerified) {
+        router.replace('/verify-email');
+      } else {
+        router.replace('/(tabs)');
+      }
+    } catch (error: any) {
+      Alert.alert('Google Sign-In Failed', error.message || 'Please try again.');
+    } finally {
+      setGoogleLoading(false);
+    }
+  };
+
+  const handleFacebookSignIn = async () => {
+    setFacebookLoading(true);
+    try {
+      const credential = await signInWithFacebook();
+      if (!credential.user.emailVerified) {
+        router.replace('/verify-email');
+      } else {
+        router.replace('/(tabs)');
+      }
+    } catch (error: any) {
+      Alert.alert('Facebook Sign-In Failed', error.message || 'Please try again.');
+    } finally {
+      setFacebookLoading(false);
     }
   };
 
@@ -90,9 +140,9 @@ export default function LoginScreen() {
           </Link>
 
           <TouchableOpacity
-            style={[styles.button, isLoading && styles.buttonDisabled]}
+            style={[styles.button, (isLoading || socialButtonsDisabled) && styles.buttonDisabled]}
             onPress={handleLogin}
-            disabled={isLoading}
+            disabled={isLoading || socialButtonsDisabled}
           >
             {isLoading ? (
               <ActivityIndicator color="#fff" />
@@ -100,6 +150,43 @@ export default function LoginScreen() {
               <Text style={styles.buttonText}>Sign In</Text>
             )}
           </TouchableOpacity>
+
+          <View style={styles.dividerContainer}>
+            <View style={styles.divider} />
+            <Text style={styles.dividerLabel}>Or continue with</Text>
+            <View style={styles.divider} />
+          </View>
+
+          <View style={styles.socialRow}>
+            <TouchableOpacity
+              style={[styles.socialButton, styles.socialGoogle]}
+              onPress={handleGoogleSignIn}
+              disabled={isGoogleLoading || isLoading}
+            >
+              {isGoogleLoading ? (
+                <ActivityIndicator color="#000" />
+              ) : (
+                <>
+                  <FontAwesome name="google" size={20} color="#DB4437" />
+                  <Text style={styles.socialText}>Google</Text>
+                </>
+              )}
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.socialButton, styles.socialFacebook]}
+              onPress={handleFacebookSignIn}
+              disabled={isFacebookLoading || isLoading}
+            >
+              {isFacebookLoading ? (
+                <ActivityIndicator color="#fff" />
+              ) : (
+                <>
+                  <FontAwesome name="facebook" size={20} color="#fff" />
+                  <Text style={[styles.socialText, styles.socialTextWhite]}>Facebook</Text>
+                </>
+              )}
+            </TouchableOpacity>
+          </View>
 
           <View style={styles.registerContainer}>
             <Text style={styles.registerText}>Don't have an account? </Text>
@@ -205,5 +292,53 @@ const styles = StyleSheet.create({
     color: Colors.primary.orange,
     fontSize: 14,
     fontWeight: '600',
+  },
+  dividerContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  divider: {
+    flex: 1,
+    height: 1,
+    backgroundColor: Colors.border,
+  },
+  dividerLabel: {
+    marginHorizontal: 12,
+    fontSize: 12,
+    color: Colors.text.secondary,
+  },
+  socialRow: {
+    flexDirection: 'row',
+    gap: 12,
+    marginBottom: 24,
+  },
+  socialButton: {
+    flex: 1,
+    borderRadius: 12,
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    backgroundColor: '#fff',
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
+    gap: 8,
+  },
+  socialGoogle: {
+    backgroundColor: '#fff',
+  },
+  socialFacebook: {
+    backgroundColor: '#1877F2',
+    borderColor: '#1877F2',
+  },
+  socialText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: Colors.text.primary,
+  },
+  socialTextWhite: {
+    color: '#fff',
   },
 });

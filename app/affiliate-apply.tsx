@@ -11,6 +11,7 @@ import { Colors } from '../constants/Colors';
 import { db, storage } from '../lib/firebase';
 import { doc, setDoc, getDoc } from 'firebase/firestore';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
+import ProfileGuard from '../components/ProfileGuard';
 
 const PROVINCES = [
   'Eastern Cape', 'Free State', 'Gauteng', 'KwaZulu-Natal',
@@ -195,6 +196,7 @@ export default function AffiliateApplyScreen() {
   }
 
   return (
+    <ProfileGuard>
     <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
       <ScrollView style={styles.container} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
 
@@ -386,6 +388,7 @@ export default function AffiliateApplyScreen() {
         <View style={{ height: 40 }} />
       </ScrollView>
     </KeyboardAvoidingView>
+    </ProfileGuard>
   );
 }
 

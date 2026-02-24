@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useState, ReactNode } from 'react';
+import React, { createContext, useContext, useEffect, useMemo, useState, ReactNode } from 'react';
 import {
   User,
   UserCredential,
@@ -9,11 +9,29 @@ import {
   sendPasswordResetEmail,
   sendEmailVerification,
   updateProfile,
+  signInWithCredential,
+  GoogleAuthProvider,
+  FacebookAuthProvider,
 } from 'firebase/auth';
 import { doc, setDoc, getDoc } from 'firebase/firestore';
 import { auth, db } from '../lib/firebase';
+import * as WebBrowser from 'expo-web-browser';
+import * as Google from 'expo-auth-session/providers/google';
+import * as Facebook from 'expo-auth-session/providers/facebook';
+import Constants from 'expo-constants';
+import { consumeReferralCode, storeReferralCode } from '../lib/referral';
 
 const LINK_PROFILE_API_URL = 'https://app.mybenefitz.co.za/api/link-profile';
+
+WebBrowser.maybeCompleteAuthSession();
+
+type SocialAuthConfig = {
+  googleExpoClientId?: string;
+  googleIosClientId?: string;
+  googleAndroidClientId?: string;
+  googleWebClientId?: string;
+  facebookAppId?: string;
+};
 
 interface LinkProfileResult {
   linked: boolean;
@@ -157,6 +175,8 @@ interface AuthContextType {
   isHomeAffairsVerified: boolean;
   isAccountFlagged: boolean;
   signIn: (email: string, password: string) => Promise<UserCredential>;
+  signInWithGoogle: () => Promise<UserCredential>;
+  signInWithFacebook: () => Promise<UserCredential>;
   signUp: (email: string, password: string, displayName: string) => Promise<void>;
   signOut: () => Promise<void>;
   resetPassword: (email: string) => Promise<void>;
@@ -171,6 +191,57 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
   const [loading, setLoading] = useState(true);
+
+  const socialAuthConfig = useMemo<SocialAuthConfig>(() => {
+    const extra = (Constants?.expoConfig?.extra ?? Constants?.manifest?.extra ?? {}) as {
+      socialAuth?: SocialAuthConfig;
+    };
+    return extra?.socialAuth ?? {};
+  }, []);
+
+  const googleConfig = useMemo(() => ({
+    expoClientId: socialAuthConfig.googleExpoClientId,
+    iosClientId: socialAuthConfig.googleIosClientId,
+    androidClientId: socialAuthConfig.googleAndroidClientId,
+    webClientId: socialAuthConfig.googleWebClientId,
+  }), [socialAuthConfig]);
+
+  const [googleRequest, , promptGoogleAsync] = Google.useAuthRequest(
+    googleConfig,
+  );
+
+  const [facebookRequest, , promptFacebookAsync] = Facebook.useAuthRequest({
+    clientId: socialAuthConfig.facebookAppId ?? '',
+    scopes: ['public_profile', 'email'],
+  });
+
+  const ensureProfileForSocialSignIn = async (firebaseUser: User) => {
+    const profileDoc = await getDoc(doc(db, 'profiles', firebaseUser.uid));
+    if (profileDoc.exists()) {
+      const profile = profileDoc.data() as UserProfile;
+      setUserProfile(profile);
+      return profile;
+    }
+
+    const displayName = firebaseUser.displayName || firebaseUser.email || '';
+    const [firstName, ...rest] = displayName.trim().split(' ');
+    const lastName = rest.join(' ') || '';
+    const idToken = await firebaseUser.getIdToken(true);
+    const referralCode = await consumeReferralCode();
+    const linkResult = await callLinkProfileAPI(idToken, {
+      displayName,
+      firstName,
+      lastName,
+      source: 'mobile_app',
+      ...(referralCode ? { referralCode } : {}),
+    });
+    if (linkResult?.profile) {
+      const profile = linkResult.profile as unknown as UserProfile;
+      setUserProfile(profile);
+      return profile;
+    }
+    return null;
+  };
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
@@ -254,12 +325,58 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return credential;
   };
 
+  const signInWithGoogle = async () => {
+    if (!googleRequest) {
+      throw new Error('Google sign-in is not ready yet. Please try again in a moment.');
+    }
+    const hasConfig = !!(googleConfig.expoClientId || googleConfig.iosClientId || googleConfig.androidClientId || googleConfig.webClientId);
+    if (!hasConfig) {
+      throw new Error('Google sign-in is not configured for this build.');
+    }
+    const result = await promptGoogleAsync({
+      showInRecents: true,
+    });
+    if (result?.type !== 'success' || !result.authentication?.idToken) {
+      if (result?.type === 'dismiss' || result?.type === 'cancel') {
+        throw new Error('Google sign-in cancelled.');
+      }
+      throw new Error('Google sign-in failed. Please try again.');
+    }
+    const credential = GoogleAuthProvider.credential(result.authentication.idToken);
+    const userCredential = await signInWithCredential(auth, credential);
+    await ensureProfileForSocialSignIn(userCredential.user);
+    return userCredential;
+  };
+
+  const signInWithFacebook = async () => {
+    if (!facebookRequest) {
+      throw new Error('Facebook sign-in is not ready yet. Please try again.');
+    }
+    if (!socialAuthConfig.facebookAppId) {
+      throw new Error('Facebook sign-in is not configured for this build.');
+    }
+    const result = await promptFacebookAsync({
+      showInRecents: true,
+    });
+    if (result?.type !== 'success' || !result.authentication?.accessToken) {
+      if (result?.type === 'dismiss' || result?.type === 'cancel') {
+        throw new Error('Facebook sign-in cancelled.');
+      }
+      throw new Error('Facebook sign-in failed. Please try again.');
+    }
+    const credential = FacebookAuthProvider.credential(result.authentication.accessToken);
+    const userCredential = await signInWithCredential(auth, credential);
+    await ensureProfileForSocialSignIn(userCredential.user);
+    return userCredential;
+  };
+
   const signUp = async (email: string, password: string, displayName: string) => {
     const { user } = await createUserWithEmailAndPassword(auth, email, password);
     await updateProfile(user, { displayName });
 
     const [firstName, ...rest] = displayName.split(' ');
     const lastName = rest.join(' ') || '';
+    const referralCode = await consumeReferralCode();
 
     // Server-side check-and-link: the API uses Admin SDK to query
     // profiles by email (bypasses Firestore isOwner rule).
@@ -270,6 +387,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       firstName,
       lastName,
       source: 'mobile_app',
+      ...(referralCode ? { referralCode } : {}),
     });
 
     if (linkResult?.profile) {
@@ -357,6 +475,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         isHomeAffairsVerified,
         isAccountFlagged,
         signIn,
+        signInWithGoogle,
+        signInWithFacebook,
         signUp,
         signOut,
         resetPassword,

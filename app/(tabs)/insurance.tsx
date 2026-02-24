@@ -1,35 +1,39 @@
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity } from 'react-native';
+import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { Colors } from '../../constants/Colors';
 
 const insuranceTypes = [
-  { name: 'Life Insurance', description: 'Protect your loved ones', icon: 'heart', color: '#ef4444' },
-  { name: 'Funeral Cover', description: 'Dignified funeral plans', icon: 'umbrella', color: '#8b5cf6' },
-  { name: 'Home Insurance', description: 'Protect your home', icon: 'home', color: '#3b82f6' },
-  { name: 'Car Insurance', description: 'Vehicle coverage', icon: 'car', color: '#10b981' },
+  { name: 'Life Insurance', description: 'Protect your loved ones', icon: 'heart', color: '#ef4444', route: '/life-insurance-apply' },
+  { name: 'Funeral Cover', description: 'Dignified funeral plans', icon: 'umbrella', color: '#8b5cf6', route: '/funeral-cover-apply' },
+  { name: 'Retirement Annuity', description: 'Tax-efficient retirement savings', icon: 'trending-up', color: '#3b82f6', route: '/retirement-apply' },
+  { name: 'Tax Free Savings', description: 'Grow your savings tax-free', icon: 'cash', color: '#10b981', route: '/tax-free-savings-apply' },
+  { name: 'Wills & Estates', description: 'Free consultation', icon: 'document-text', color: '#f59e0b', route: '/wills-estates-apply' },
 ];
 
 export default function InsuranceScreen() {
+  const router = useRouter();
+
   return (
     <ScrollView style={styles.container} showsVerticalScrollIndicator={false}>
       <View style={styles.heroCard}>
         <Ionicons name="shield-checkmark" size={48} color="rgba(255,255,255,0.3)" style={styles.heroIcon} />
         <Text style={styles.heroTitle}>Get Covered Today</Text>
-        <Text style={styles.heroText}>Compare quotes from South Africa's top insurers</Text>
+        <Text style={styles.heroText}>Insurance, savings & estate planning products</Text>
       </View>
 
       <View style={styles.section}>
-        <Text style={styles.sectionTitle}>Insurance Products</Text>
+        <Text style={styles.sectionTitle}>Our Products</Text>
         <View style={styles.productsGrid}>
           {insuranceTypes.map((insurance, index) => (
-            <TouchableOpacity key={index} style={styles.productCard}>
+            <TouchableOpacity key={index} style={styles.productCard} onPress={() => router.push(insurance.route as any)}>
               <View style={[styles.productIcon, { backgroundColor: insurance.color + '20' }]}>
                 <Ionicons name={insurance.icon as any} size={28} color={insurance.color} />
               </View>
               <Text style={styles.productName}>{insurance.name}</Text>
               <Text style={styles.productDescription}>{insurance.description}</Text>
-              <TouchableOpacity style={styles.quoteButton}>
-                <Text style={styles.quoteButtonText}>Get Quote</Text>
+              <TouchableOpacity style={styles.quoteButton} onPress={() => router.push(insurance.route as any)}>
+                <Text style={styles.quoteButtonText}>Apply Now</Text>
               </TouchableOpacity>
             </TouchableOpacity>
           ))}

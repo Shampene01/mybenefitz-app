@@ -1,4 +1,4 @@
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert, Switch } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../../contexts/AuthContext';
@@ -14,7 +14,8 @@ const menuItems = [
 ];
 
 export default function ProfileScreen() {
-  const { userProfile, signOut, user } = useAuth();
+  const { userProfile, signOut, user, updateUserProfile } = useAuth();
+  const showEarnings = userProfile?.preferences?.showEarnings !== false;
   const router = useRouter();
 
   const handleSignOut = () => {
@@ -63,6 +64,27 @@ export default function ProfileScreen() {
             <Ionicons name="chevron-forward" size={20} color={Colors.text.light} />
           </TouchableOpacity>
         ))}
+      </View>
+
+      <View style={styles.preferencesSection}>
+        <Text style={styles.preferencesSectionTitle}>Preferences</Text>
+        <View style={styles.preferenceItem}>
+          <View style={styles.preferenceInfo}>
+            <View style={styles.preferenceIcon}>
+              <Ionicons name="cash-outline" size={20} color={Colors.primary.orange} />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.preferenceTitle}>Show Monthly Earnings</Text>
+              <Text style={styles.preferenceDesc}>Display the earnings card on your home screen</Text>
+            </View>
+          </View>
+          <Switch
+            value={showEarnings}
+            onValueChange={(val) => updateUserProfile({ preferences: { ...userProfile?.preferences, showEarnings: val } })}
+            trackColor={{ false: Colors.border, true: Colors.primary.blue + '40' }}
+            thumbColor={showEarnings ? Colors.primary.blue : '#f4f3f4'}
+          />
+        </View>
       </View>
 
       <TouchableOpacity style={styles.signOutButton} onPress={handleSignOut}>
@@ -167,6 +189,56 @@ const styles = StyleSheet.create({
     color: Colors.status.error,
     fontSize: 16,
     fontWeight: '600',
+  },
+  preferencesSection: {
+    marginTop: 16,
+    marginHorizontal: 16,
+    backgroundColor: '#fff',
+    borderRadius: 16,
+    padding: 16,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 4,
+    elevation: 1,
+  },
+  preferencesSectionTitle: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: Colors.text.light,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+    marginBottom: 14,
+  },
+  preferenceItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  preferenceInfo: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    flex: 1,
+    marginRight: 12,
+  },
+  preferenceIcon: {
+    width: 38,
+    height: 38,
+    borderRadius: 10,
+    backgroundColor: Colors.primary.orange + '12',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  preferenceTitle: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: Colors.text.primary,
+  },
+  preferenceDesc: {
+    fontSize: 12,
+    color: Colors.text.light,
+    marginTop: 2,
   },
   version: {
     textAlign: 'center',

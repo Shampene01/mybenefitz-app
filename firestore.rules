@@ -24,9 +24,11 @@ service cloud.firestore {
     }
 
     // Check if parent document's uid field references the current user
+    // Supports both new 'profiles' and legacy 'users' document reference paths
     function parentOwnedByUser(parentPath) {
       return isAuth()
-        && get(parentPath).data.uid == /databases/$(database)/documents/users/$(request.auth.uid);
+        && (get(parentPath).data.uid == /databases/$(database)/documents/profiles/$(request.auth.uid)
+            || get(parentPath).data.uid == /databases/$(database)/documents/users/$(request.auth.uid));
     }
 
     // Check if user's email is verified
@@ -39,6 +41,25 @@ service cloud.firestore {
       return request.resource.data.keys().hasAll(['updatedAt']);
     }
 
+    // Check if profile is Home Affairs verified (fields are locked)
+    function isHomeAffairsVerified(profile) {
+      return profile.data.keys().hasAll(['identityVerification']) 
+        && profile.data.identityVerification.status == 'home_affairs_verified';
+    }
+
+    // Check if update affects locked fields (idNumber, firstName, lastName, dateOfBirth)
+    function affectsLockedFields(resource, request) {
+      return request.resource.data.diff(resource.data).affectedKeys()
+        .hasAny(['idNumber', 'firstName', 'lastName', 'dateOfBirth']);
+    }
+
+    // Case-insensitive email comparison between Firestore doc and auth token
+    function emailMatches(docEmail) {
+      return isAuth()
+        && request.auth.token.email != null
+        && docEmail.lower() == request.auth.token.email.lower();
+    }
+
     // ============================================================
     // CONTACTS (WhatsApp / partner channel profiles)
     // ============================================================
@@ -48,14 +69,14 @@ service cloud.firestore {
       // Read: admin, already-linked verified user, OR verified user whose email matches
       allow read: if isAdmin()
         || (isVerified() && resource.data.linkedUserId == request.auth.uid)
-        || (isVerified() && resource.data.email == request.auth.token.email);
+        || (isVerified() && emailMatches(resource.data.email));
       allow create: if isAdmin();
       // Update: admin can do anything; verified user can ONLY set
       // linkedUserId (to their own uid) and linkingStrategy — and only if
       // the contact email matches their verified email.
       allow update: if isAdmin()
         || (isVerified()
-            && resource.data.email == request.auth.token.email
+            && emailMatches(resource.data.email)
             && request.resource.data.diff(resource.data).affectedKeys()
                .hasOnly(['linkedUserId', 'linkingStrategy'])
             && request.resource.data.linkedUserId == request.auth.uid);
@@ -77,9 +98,11 @@ service cloud.firestore {
     // Admin and Cloud Functions manage writes.
     match /clientProducts/{productId} {
       allow read: if isAdmin()
-        || (isVerified() && resource.data.email == request.auth.token.email);
-      allow create: if isAdmin();
-      allow update: if isAdmin();
+        || (isVerified() && emailMatches(resource.data.email));
+      allow create: if isAdmin()
+        || (isVerified() && emailMatches(request.resource.data.email));
+      allow update: if isAdmin()
+        || (isVerified() && emailMatches(resource.data.email));
       allow delete: if false;
     }
 
@@ -88,7 +111,7 @@ service cloud.firestore {
     // ============================================================
     match /paymentLinks/{linkId} {
       allow read: if isAdmin()
-        || (isVerified() && resource.data.email == request.auth.token.email);
+        || (isVerified() && emailMatches(resource.data.email));
       allow create: if isAdmin();
       allow update: if isAdmin();
       allow delete: if false;
@@ -113,10 +136,21 @@ service cloud.firestore {
     // Owner can create, read, and update their own document.
     // Users cannot delete their own profile (admin/backend only).
     // Admins can read any profile.
+    // Locked fields (idNumber, firstName, lastName, dateOfBirth) cannot be updated
+    // after Home Affairs verification.
     match /profiles/{profileId} {
       allow create: if isOwner(profileId) || isAdmin();
       allow read: if isOwner(profileId) || isAdmin();
-      allow update: if isOwner(profileId) || isAdmin();
+      
+      // Update: allow if owner AND (not verified OR not affecting locked fields)
+      allow update: if (isOwner(profileId) || isAdmin())
+        && (
+          // Not verified — allow all updates
+          !isHomeAffairsVerified(resource)
+          // Verified — block locked fields
+          || !affectsLockedFields(resource, request)
+        );
+      
       allow delete: if false;
 
       // Consents subcollection
@@ -140,6 +174,17 @@ service cloud.firestore {
         allow create: if isOwner(profileId);
         allow read: if isOwner(profileId) || isAdmin();
         allow update: if isOwner(profileId);
+        allow delete: if isOwner(profileId);
+      }
+
+      // Financial Profile (FNA — progressive financial profiling)
+      // Covers all documents and nested subcollections:
+      //   financialProfile/{doc}                  — overview, income, expenses, goals, etc.
+      //   financialProfile/{doc}/{sub}/{item}      — assets/properties, liabilities/debts, etc.
+      //   financialProfile/{doc}/{sub}/{item}/...  — audit/fnaSnapshots, etc.
+      match /financialProfile/{document=**} {
+        allow read: if isOwner(profileId) || isAdmin();
+        allow create, update: if isOwner(profileId);
         allow delete: if isOwner(profileId);
       }
     }
@@ -321,6 +366,91 @@ service cloud.firestore {
       allow create: if isVerified();
       allow update: if false;
       allow delete: if false;
+    }
+
+    // ============================================================
+    // INSURERS (public product/insurer data — admin-managed)
+    // ============================================================
+    // Any authenticated user can read insurer info (shown on product pages).
+    // Only admin (shampene@lebonconsulting.co.za or role=admin) can write.
+    match /insurers/{insurerId} {
+      allow read: if isAuth();
+      allow create, update: if isAdmin();
+      allow delete: if isAdmin();
+
+      // Certificates subcollection (FSB licences, compliance docs, etc.)
+      match /certificates/{certId} {
+        allow read: if isAuth();
+        allow create, update: if isAdmin();
+        allow delete: if isAdmin();
+      }
+    }
+
+    // ============================================================
+    // PLATFORM DOCUMENTS (fund fact sheets, disclosures — admin-managed)
+    // ============================================================
+    match /platformDocuments/{docId} {
+      allow read: if isAuth();
+      allow create, update: if isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    // ============================================================
+    // CAMPAIGNS (promotional banners & campaigns — admin-managed)
+    // ============================================================
+    match /campaigns/{campaignId} {
+      allow read: if isAuth();
+      allow create, update: if isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    // ============================================================
+    // SUPPORT TICKETS (user creates & reads own, admin manages all)
+    // ============================================================
+    match /supportTickets/{ticketId} {
+      allow read: if isAdmin()
+        || (isAuth() && resource.data.userId == request.auth.uid);
+      allow create: if isAuth()
+        && request.resource.data.userId == request.auth.uid;
+      allow update: if isAdmin()
+        || (isAuth() && resource.data.userId == request.auth.uid);
+      allow delete: if isAdmin();
+    }
+
+    // ============================================================
+    // NOTIFICATION PREFERENCES (coming-soon product interest capture)
+    // ============================================================
+    match /notificationPreferences/{prefId} {
+      allow read: if isAdmin();
+      allow create: if isAuth();
+      allow update: if false;
+      allow delete: if isAdmin();
+    }
+
+    // ============================================================
+    // NOTIFICATIONS (legacy — system-generated, user reads own)
+    // ============================================================
+    match /notifications/{notifId} {
+      allow read: if isAuth()
+        && resource.data.uid == request.auth.uid;
+      allow update: if isAuth()
+        && resource.data.uid == request.auth.uid
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['read']);
+      allow create: if isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    // ============================================================
+    // CLIENT NOTIFICATIONS (backend-generated, user reads & marks read)
+    // ============================================================
+    match /clientNotifications/{notifId} {
+      allow read: if isAuth()
+        && resource.data.uid == request.auth.uid;
+      allow update: if isAuth()
+        && resource.data.uid == request.auth.uid
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['read']);
+      allow create: if isAdmin();
+      allow delete: if isAdmin();
     }
 
     // ============================================================

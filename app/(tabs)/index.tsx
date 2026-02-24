@@ -5,29 +5,38 @@ import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '../../contexts/AuthContext';
 import { Colors } from '../../constants/Colors';
+import { STAT_ICONS, ACTION_ICONS, CustomIcon } from '../../constants/CustomIcons';
 import DrawerMenu from '../../components/DrawerMenu';
 import CampaignCarousel from '../../components/CampaignCarousel';
 import HealthScoreCard from '../../components/HealthScoreGauge';
 import MonthlyEarningsCard from '../../components/MonthlyEarningsCard';
 
+function IconRenderer({ icon, size }: { icon: CustomIcon; size: number }) {
+  if (icon.image) {
+    return <Image source={icon.image} style={{ width: size, height: size }} resizeMode="contain" />;
+  }
+  return <Ionicons name={icon.fallbackIonicon as any} size={size} color={icon.color} />;
+}
+
 const quickActions = [
-  { title: 'Credit Repair', icon: 'card', route: '/(tabs)/credit' },
-  { title: 'Get Insurance', icon: 'shield-checkmark', route: '/(tabs)/insurance' },
-  { title: 'Apply for Loan', icon: 'wallet', route: '/(tabs)/loans' },
-  { title: 'My Profile', icon: 'person', route: '/(tabs)/profile' },
+  { title: 'Credit Repair', iconKey: 'creditRepair', route: '/(tabs)/credit' },
+  { title: 'Get Insurance', iconKey: 'getInsurance', route: '/(tabs)/insurance' },
+  { title: 'Apply for Loan', iconKey: 'applyForLoan', route: '/(tabs)/loans' },
+  { title: 'My Profile', iconKey: 'myProfile', route: '/(tabs)/profile' },
 ];
 
 const stats = [
-  { title: 'Active Products', value: '0', icon: 'briefcase', color: '#3b82f6' },
-  { title: 'Credit Score', value: '---', icon: 'card', color: '#10b981' },
-  { title: 'Policies', value: '0', icon: 'shield-checkmark', color: '#8b5cf6' },
+  { title: 'Active Products', value: '0', iconKey: 'activeProducts' },
+  { title: 'Credit Score', value: '---', iconKey: 'creditScore' },
+  { title: 'Policies', value: '0', iconKey: 'policies' },
 ];
 
 export default function HomeScreen() {
-  const { userProfile, updateUserProfile } = useAuth();
+  const { userProfile, updateUserProfile, isProfileComplete, isAccountFlagged } = useAuth();
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const [drawerVisible, setDrawerVisible] = useState(false);
+  const [nudgeDismissed, setNudgeDismissed] = useState(false);
 
   // Earnings card visibility: hidden only if user explicitly set showEarnings to false
   const showEarnings = userProfile?.preferences?.showEarnings !== false;
@@ -82,6 +91,29 @@ export default function HomeScreen() {
           </View>
         </TouchableOpacity>
 
+        {!isProfileComplete && !isAccountFlagged && !nudgeDismissed && (
+          <View style={styles.nudgeBanner}>
+            <View style={styles.nudgeContent}>
+              <Ionicons name="alert-circle" size={22} color="#92400e" />
+              <View style={{ flex: 1 }}>
+                <Text style={styles.nudgeTitle}>Complete your profile</Text>
+                <Text style={styles.nudgeDesc}>Fill in your details to unlock all product applications and improve your Financial Health Score.</Text>
+              </View>
+              <TouchableOpacity onPress={() => setNudgeDismissed(true)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                <Ionicons name="close" size={20} color="#92400e" />
+              </TouchableOpacity>
+            </View>
+            <TouchableOpacity
+              style={styles.nudgeButton}
+              onPress={() => router.push('/edit-profile')}
+              activeOpacity={0.8}
+            >
+              <Text style={styles.nudgeButtonText}>Complete now</Text>
+              <Ionicons name="chevron-forward" size={16} color="#fff" />
+            </TouchableOpacity>
+          </View>
+        )}
+
         <HealthScoreCard onPress={() => router.push('/improve-score')} />
 
         <CampaignCarousel onCampaignPress={(campaign) => {
@@ -92,21 +124,25 @@ export default function HomeScreen() {
 
       <View style={styles.contentSection}>
         <View style={styles.statsContainer}>
-        {stats.map((stat, index) => (
-          <View key={index} style={styles.statCard}>
-            <View style={[styles.statIcon, { backgroundColor: stat.color + '20' }]}>
-              <Ionicons name={stat.icon as any} size={24} color={stat.color} />
+        {stats.map((stat, index) => {
+          const icon = STAT_ICONS[stat.iconKey];
+          return (
+            <View key={index} style={styles.statCard}>
+              <View style={[styles.statIcon, { backgroundColor: icon.color + '20' }]}>
+                <IconRenderer icon={icon} size={24} />
+              </View>
+              <Text style={styles.statValue}>{stat.value}</Text>
+              <Text style={styles.statTitle}>{stat.title}</Text>
             </View>
-            <Text style={styles.statValue}>{stat.value}</Text>
-            <Text style={styles.statTitle}>{stat.title}</Text>
-          </View>
-        ))}
+          );
+        })}
       </View>
 
       {showEarnings && (
         <MonthlyEarningsCard
           onIncreaseEarnings={() => router.push('/increase-earnings')}
           onHowItWorks={() => router.push('/how-it-works')}
+          onApply={() => router.push('/affiliate-apply' as any)}
           onHide={handleHideEarnings}
         />
       )}
@@ -114,18 +150,21 @@ export default function HomeScreen() {
       <View style={styles.section}>
         <Text style={styles.sectionTitle}>Quick Actions</Text>
         <View style={styles.actionsGrid}>
-          {quickActions.map((action, index) => (
-            <TouchableOpacity
-              key={index}
-              style={styles.actionCard}
-              onPress={() => router.push(action.route as any)}
-            >
-              <View style={styles.actionIcon}>
-                <Ionicons name={action.icon as any} size={28} color={Colors.primary.blue} />
-              </View>
-              <Text style={styles.actionTitle}>{action.title}</Text>
-            </TouchableOpacity>
-          ))}
+          {quickActions.map((action, index) => {
+            const icon = ACTION_ICONS[action.iconKey];
+            return (
+              <TouchableOpacity
+                key={index}
+                style={styles.actionCard}
+                onPress={() => router.push(action.route as any)}
+              >
+                <View style={[styles.actionIcon, { backgroundColor: icon.color + '10' }]}>
+                  <IconRenderer icon={icon} size={28} />
+                </View>
+                <Text style={styles.actionTitle}>{action.title}</Text>
+              </TouchableOpacity>
+            );
+          })}
         </View>
       </View>
 
@@ -302,7 +341,6 @@ const styles = StyleSheet.create({
   actionIcon: {
     width: 56,
     height: 56,
-    backgroundColor: Colors.primary.blue + '10',
     borderRadius: 16,
     justifyContent: 'center',
     alignItems: 'center',
@@ -341,5 +379,46 @@ const styles = StyleSheet.create({
   },
   bottomPadding: {
     height: 24,
+  },
+  nudgeBanner: {
+    marginHorizontal: 16,
+    marginTop: 8,
+    marginBottom: 4,
+    backgroundColor: '#fffbeb',
+    borderWidth: 1,
+    borderColor: '#fde68a',
+    borderRadius: 16,
+    padding: 16,
+  },
+  nudgeContent: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 10,
+  },
+  nudgeTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#92400e',
+  },
+  nudgeDesc: {
+    fontSize: 12,
+    color: '#78350f',
+    marginTop: 3,
+    lineHeight: 18,
+  },
+  nudgeButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 4,
+    backgroundColor: '#f59e0b',
+    borderRadius: 10,
+    paddingVertical: 10,
+    marginTop: 12,
+  },
+  nudgeButtonText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#fff',
   },
 });

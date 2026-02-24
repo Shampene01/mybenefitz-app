@@ -7,10 +7,11 @@ import { Colors } from '../constants/Colors';
 interface MonthlyEarningsCardProps {
   onIncreaseEarnings: () => void;
   onHowItWorks: () => void;
+  onApply: () => void;
   onHide: () => void;
 }
 
-export default function MonthlyEarningsCard({ onIncreaseEarnings, onHowItWorks, onHide }: MonthlyEarningsCardProps) {
+export default function MonthlyEarningsCard({ onIncreaseEarnings, onHowItWorks, onApply, onHide }: MonthlyEarningsCardProps) {
   const { userProfile } = useAuth();
 
   const monthly = userProfile?.affiliate?.monthlyEarnings ?? 0;
@@ -50,13 +51,13 @@ export default function MonthlyEarningsCard({ onIncreaseEarnings, onHowItWorks, 
       </View>
 
       <View style={styles.linksRow}>
-        <TouchableOpacity style={styles.linkButton} onPress={onIncreaseEarnings} activeOpacity={0.7}>
-          <Ionicons name="trending-up" size={16} color="#fff" />
-          <Text style={styles.linkButtonText}>Increase Earnings</Text>
+        <TouchableOpacity style={styles.linkButton} onPress={onApply} activeOpacity={0.7}>
+          <Ionicons name="document-text" size={16} color="#fff" />
+          <Text style={styles.linkButtonText}>Apply Now</Text>
         </TouchableOpacity>
-        <TouchableOpacity style={styles.linkButtonOutline} onPress={onHowItWorks} activeOpacity={0.7}>
-          <Ionicons name="information-circle-outline" size={16} color={Colors.primary.blue} />
-          <Text style={styles.linkButtonOutlineText}>How It Works</Text>
+        <TouchableOpacity style={styles.linkButtonOutline} onPress={onIncreaseEarnings} activeOpacity={0.7}>
+          <Ionicons name="trending-up" size={16} color={Colors.primary.blue} />
+          <Text style={styles.linkButtonOutlineText}>Increase Earnings</Text>
         </TouchableOpacity>
       </View>
     </View>

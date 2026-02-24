@@ -40,6 +40,7 @@ export default function RootLayout() {
         <Stack.Screen name="index" options={{ headerShown: false }} />
         <Stack.Screen name="(auth)" options={{ headerShown: false }} />
         <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+        <Stack.Screen name="verify-email" options={{ headerShown: false }} />
         <Stack.Screen
           name="edit-profile"
           options={{
@@ -84,6 +85,62 @@ export default function RootLayout() {
           name="fica-upload"
           options={{
             title: 'FICA Documents',
+            presentation: 'modal',
+            headerLeft: () => <BackButton />,
+          }}
+        />
+        <Stack.Screen
+          name="affiliate-apply"
+          options={{
+            title: 'Affiliate Application',
+            presentation: 'modal',
+            headerLeft: () => <BackButton />,
+          }}
+        />
+        <Stack.Screen
+          name="loan-apply"
+          options={{
+            title: 'Loan Application',
+            presentation: 'modal',
+            headerLeft: () => <BackButton />,
+          }}
+        />
+        <Stack.Screen
+          name="life-insurance-apply"
+          options={{
+            title: 'Life Insurance Application',
+            presentation: 'modal',
+            headerLeft: () => <BackButton />,
+          }}
+        />
+        <Stack.Screen
+          name="retirement-apply"
+          options={{
+            title: 'Retirement Annuity',
+            presentation: 'modal',
+            headerLeft: () => <BackButton />,
+          }}
+        />
+        <Stack.Screen
+          name="tax-free-savings-apply"
+          options={{
+            title: 'Tax Free Savings',
+            presentation: 'modal',
+            headerLeft: () => <BackButton />,
+          }}
+        />
+        <Stack.Screen
+          name="wills-estates-apply"
+          options={{
+            title: 'Wills & Estates',
+            presentation: 'modal',
+            headerLeft: () => <BackButton />,
+          }}
+        />
+        <Stack.Screen
+          name="funeral-cover-apply"
+          options={{
+            title: 'Funeral Cover',
             presentation: 'modal',
             headerLeft: () => <BackButton />,
           }}
