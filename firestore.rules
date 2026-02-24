@@ -142,13 +142,15 @@ service cloud.firestore {
       allow create: if isOwner(profileId) || isAdmin();
       allow read: if isOwner(profileId) || isAdmin();
       
-      // Update: allow if owner AND (not verified OR not affecting locked fields)
-      allow update: if (isOwner(profileId) || isAdmin())
-        && (
-          // Not verified — allow all updates
-          !isHomeAffairsVerified(resource)
-          // Verified — block locked fields
-          || !affectsLockedFields(resource, request)
+      // Update: admins can update anything; owners can update if not verified OR not changing locked fields
+      allow update: if isAdmin()
+        || (isOwner(profileId)
+            && (
+              // Not verified — allow all updates
+              !isHomeAffairsVerified(resource)
+              // Verified — only block if locked fields are actually CHANGED (not just included)
+              || !affectsLockedFields(resource, request)
+            )
         );
       
       allow delete: if false;
@@ -175,6 +177,16 @@ service cloud.firestore {
         allow read: if isOwner(profileId) || isAdmin();
         allow update: if isOwner(profileId);
         allow delete: if isOwner(profileId);
+      }
+
+      // Product Applications subcollection (Phase 1 dual-write migration)
+      // Each application gets its own document — no overwrites, full audit trail
+      match /productApplications/{applicationId} {
+        allow read: if isOwner(profileId) || isAdmin();
+        allow create: if isOwner(profileId) || isAdmin();
+        allow update: if isOwner(profileId) || isAdmin();
+        // No delete — applications are immutable for audit
+        allow delete: if false;
       }
 
       // Financial Profile (FNA — progressive financial profiling)
