@@ -58,6 +58,19 @@ service firebase.storage {
     }
 
     // ============================================================
+    // FINANCIAL PROFILE: INSURANCE POLICY DOCUMENTS
+    // ============================================================
+    // Users can upload policy documents for their insurance policies.
+    // Path: profiles/{profileId}/financialProfile/insurance/{policyId}/{file}
+    match /profiles/{profileId}/financialProfile/insurance/{policyId}/{file} {
+      allow read: if request.auth != null && request.auth.uid == profileId;
+      allow write: if request.auth != null
+                   && request.auth.uid == profileId
+                   && request.resource.size < 5 * 1024 * 1024
+                   && request.resource.contentType == 'application/pdf';
+    }
+
+    // ============================================================
     // LEGACY: users/ storage (read-only for 90-day migration)
     // ============================================================
     match /users/{userId}/fica/{file} {

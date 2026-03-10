@@ -111,7 +111,8 @@ service cloud.firestore {
     // ============================================================
     match /paymentLinks/{linkId} {
       allow read: if isAdmin()
-        || (isVerified() && emailMatches(resource.data.email));
+        || (isVerified() && emailMatches(resource.data.email))
+        || (isVerified() && resource.data.uid == request.auth.uid);
       allow create: if isAdmin();
       allow update: if isAdmin();
       allow delete: if false;

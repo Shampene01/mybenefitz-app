@@ -6,6 +6,10 @@
         ".read": "auth != null && (auth.uid === $uid || auth.token.admin === true)",
         ".write": "auth != null && auth.uid === $uid"
       }
+    },
+    "ubuntu_rates": {
+      ".read": "auth != null",
+      ".write": false
     }
   }
 }
