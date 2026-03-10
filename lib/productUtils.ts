@@ -1,5 +1,6 @@
 import { httpsCallable } from 'firebase/functions';
-import { functions } from './firebase';
+import { doc, setDoc, collection } from 'firebase/firestore';
+import { functions, db } from './firebase';
 
 // ── SA ID Number Validation (Luhn algorithm for 13-digit SA IDs) ───────
 
@@ -219,3 +220,147 @@ export const EMPLOYMENT_TYPE_OPTIONS = [
   { id: 'part_time', label: 'Part Time' },
   { id: 'unemployed', label: 'Unemployed' },
 ];
+
+export const CONTRIBUTION_FREQUENCY_OPTIONS = [
+  { id: 'monthly', label: 'Monthly' },
+  { id: 'quarterly', label: 'Quarterly' },
+  { id: 'half_yearly', label: 'Half-Yearly' },
+  { id: 'yearly', label: 'Yearly' },
+];
+
+export const ESCALATION_TYPE_OPTIONS = [
+  { id: 'none', label: 'No Escalation' },
+  { id: 'fixed_percentage', label: 'Fixed Percentage' },
+  { id: 'cpi', label: 'CPI (Consumer Price Index)' },
+];
+
+export const MONTHS = [
+  'January','February','March','April','May','June',
+  'July','August','September','October','November','December',
+];
+
+export function getTfsMaxContribution(frequency: string): number {
+  switch (frequency) {
+    case 'monthly': return 3000;
+    case 'quarterly': return 9000;
+    case 'half_yearly': return 18000;
+    case 'yearly': return 36000;
+    default: return 3000;
+  }
+}
+
+export function formatCurrency(amount: number): string {
+  return `R ${amount.toLocaleString('en-ZA', { minimumFractionDigits: 2 })}`;
+}
+
+export const getUniversalBranchCode = (bankName?: string | null): string | null => {
+  switch (bankName?.toLowerCase()) {
+    case 'absa': case 'absa bank': return '632005';
+    case 'capitec': case 'capitec bank': return '470010';
+    case 'fnb': case 'first national bank': return '250655';
+    case 'nedbank': return '198765';
+    case 'standard bank': return '051001';
+    case 'african bank': return '430000';
+    case 'investec': return '580105';
+    case 'discovery bank': return '679000';
+    case 'tymebank': case 'tyme bank': return '678910';
+    default: return null;
+  }
+};
+
+export function getReferralInfo(userProfile: Record<string, unknown>): {
+  registrationType: string;
+  referrerCode: string;
+  referredBy: string;
+} {
+  const registrationType = (userProfile?.registrationType as string) ||
+    (userProfile?.referrerCode || userProfile?.referredBy ? 'referred' : 'direct');
+  const code = (userProfile?.referrerCode || userProfile?.referredBy) as string | undefined;
+  return {
+    registrationType,
+    referrerCode: code || 'direct',
+    referredBy: code || 'direct',
+  };
+}
+
+// ── Dual-Write Product Application Helper ─────────────────────────────
+export interface SubmitProductApplicationParams {
+  uid: string;
+  productType: string;
+  productName: string;
+  productDescription: string;
+  status: string;
+  statusLabel: string;
+  applicationData: Record<string, unknown>;
+  consent: {
+    consentId: string;
+    consentType: string;
+    otpVerified: boolean;
+    otpCode: string;
+    otpMessageId: string | null;
+    otpVerifiedAt: string;
+    consentGrantedAt: string;
+    messageId: string | null;
+  };
+  consentFormDocumentUrl?: string | null;
+  consentFormUid?: string | null;
+  consentFormDocumentHash?: string | null;
+  reference: string;
+  idNumber: string;
+  waId: string | null;
+  email: string | null;
+  clientName: string;
+  paymentId?: string | null;
+  amount?: number | null;
+  registrationType: string;
+  referrerCode: string;
+  referredBy: string;
+}
+
+export interface SubmitProductApplicationResult {
+  applicationId: string;
+}
+
+export async function submitProductApplication(
+  params: SubmitProductApplicationParams,
+): Promise<SubmitProductApplicationResult> {
+  const now = new Date().toISOString();
+
+  // 1. Write to applications subcollection
+  const appRef = doc(collection(db, 'profiles', params.uid, 'applications'));
+  await setDoc(appRef, {
+    productType: params.productType,
+    status: params.status,
+    statusLabel: params.statusLabel,
+    applicationData: params.applicationData,
+    consent: params.consent,
+    consentFormDocumentUrl: params.consentFormDocumentUrl || null,
+    consentFormUid: params.consentFormUid || null,
+    consentFormDocumentHash: params.consentFormDocumentHash || null,
+    reference: params.reference,
+    channel: 'mobile_app',
+    source: 'mobile_app',
+    referrerCode: params.referrerCode || null,
+    registrationType: params.registrationType,
+    paymentId: params.paymentId || null,
+    amount: params.amount ?? null,
+    paidAt: null,
+    createdAt: now,
+    updatedAt: now,
+    completedAt: null,
+  });
+
+  // 2. Update activeProducts summary on profile
+  const profileRef = doc(db, 'profiles', params.uid);
+  await setDoc(profileRef, {
+    [`activeProducts.${params.productType}`]: {
+      latestApplicationId: appRef.id,
+      status: params.status,
+      appliedAt: now,
+    },
+    activeProduct: params.productType,
+    updatedAt: now,
+  }, { merge: true });
+
+  return { applicationId: appRef.id };
+}

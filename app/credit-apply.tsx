@@ -32,6 +32,8 @@ import {
   CONSENT_FORM_URL,
 } from '../lib/productUtils';
 import type { OtpPurpose } from '../lib/productUtils';
+import { AvatarImage, AVATARS } from '../components/ChatAvatars';
+import type { AvatarProfile } from '../components/ChatAvatars';
 
 // ── Constants ────────────────────────────────────────────────────────────
 const ACCENT = '#7c3aed';
@@ -47,15 +49,6 @@ interface ChatMessage {
   placeholder?: string;
   field?: string;
 }
-
-interface AvatarProfile {
-  id: string; name: string; gender: string; personality: string;
-}
-
-const AVATARS: AvatarProfile[] = [
-  { id: 'tshepo', name: 'Tshepo', gender: 'Male', personality: 'Warm, confident and straight-talking.' },
-  { id: 'palesa', name: 'Palesa', gender: 'Female', personality: 'Caring, detail-oriented and reassuring.' },
-];
 
 type StepKey =
   | 'choose_avatar' | 'greeting'
@@ -77,15 +70,6 @@ function BoldText({ text, style }: { text: string; style?: object }) {
   );
 }
 
-// ── Avatar fallback circle ───────────────────────────────────────────────
-function AvatarCircle({ avatar, size = 30 }: { avatar: AvatarProfile; size?: number }) {
-  const bg = avatar.id === 'tshepo' ? '#6d28d9' : '#a78bfa';
-  return (
-    <View style={{ width: size, height: size, borderRadius: size * 0.3, backgroundColor: bg, justifyContent: 'center', alignItems: 'center' }}>
-      <Text style={{ color: '#fff', fontWeight: '700', fontSize: size * 0.42 }}>{avatar.name[0]}</Text>
-    </View>
-  );
-}
 
 // ══════════════════════════════════════════════════════════════════════════
 // MAIN COMPONENT
@@ -448,7 +432,7 @@ export default function CreditApplyScreen() {
             <View style={styles.avatarGrid}>
               {AVATARS.map((av) => (
                 <TouchableOpacity key={av.id} style={styles.avatarOption} onPress={() => handleAvatarSelect(av)} activeOpacity={0.7}>
-                  <AvatarCircle avatar={av} size={52} />
+                  <AvatarImage avatar={av} size={52} />
                   <Text style={styles.avatarName}>{av.name}</Text>
                   <Text style={styles.avatarGender}>{av.gender} Digital Assistant</Text>
                   <Text style={styles.avatarPersonality}>{av.personality}</Text>
@@ -473,7 +457,7 @@ export default function CreditApplyScreen() {
         <View style={styles.chatWrap}>
           {/* Header */}
           <View style={styles.chatHeader}>
-            <AvatarCircle avatar={selectedAvatar} size={34} />
+            <AvatarImage avatar={selectedAvatar} size={34} />
             <View style={{ flex: 1 }}>
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
                 <Text style={styles.headerName}>{selectedAvatar.name}</Text>
@@ -496,7 +480,7 @@ export default function CreditApplyScreen() {
           <ScrollView ref={scrollRef} style={styles.msgScroll} contentContainerStyle={styles.msgScrollContent} showsVerticalScrollIndicator={false}>
             {messages.map((msg) => (
               <View key={msg.id} style={[styles.msgRow, msg.from === 'user' ? styles.msgRowUser : styles.msgRowBot]}>
-                {msg.from === 'bot' && <AvatarCircle avatar={selectedAvatar} size={24} />}
+                {msg.from === 'bot' && <AvatarImage avatar={selectedAvatar} size={24} />}
                 <View style={msg.from === 'bot' ? styles.bubbleBot : styles.bubbleUser}>
                   <BoldText text={msg.text} />
                 </View>
@@ -505,7 +489,7 @@ export default function CreditApplyScreen() {
 
             {isTyping && (
               <View style={[styles.msgRow, styles.msgRowBot]}>
-                <AvatarCircle avatar={selectedAvatar} size={24} />
+                <AvatarImage avatar={selectedAvatar} size={24} />
                 <View style={styles.bubbleBot}>
                   <Text style={styles.typingDots}>• • •</Text>
                 </View>
