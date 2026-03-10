@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react';
+import { useState, useRef, useCallback, useEffect } from 'react';
 import {
   View,
   Text,
@@ -6,7 +6,6 @@ import {
   ScrollView,
   TouchableOpacity,
   TextInput,
-  Alert,
   ActivityIndicator,
   KeyboardAvoidingView,
   Platform,
@@ -23,6 +22,7 @@ import ProfileGuard from '../components/ProfileGuard';
 import {
   isValidSAID,
   extractDobFromId,
+  extractGenderFromId,
   normalizePhone,
   sendWhatsAppOtp,
   verifyWhatsAppOtp,
@@ -33,822 +33,731 @@ import {
 } from '../lib/productUtils';
 import type { OtpPurpose } from '../lib/productUtils';
 
-const TOTAL_STEPS = 5;
-const CREDIT_PRICE = 79;
+// ── Constants ────────────────────────────────────────────────────────────
+const ACCENT = '#7c3aed';
+const ACCENT_BG = '#f5f3ff';
+const CREDIT_PRICE = 99;
 const OTP_PURPOSE: OtpPurpose = 'credit_report';
 
-const stepLabels = [
-  'ID Number',
-  'Consent',
-  'Verify OTP',
-  'Payment',
-  'Complete',
+interface ChatMessage {
+  id: string;
+  from: 'bot' | 'user';
+  text: string;
+  inputType?: 'text' | 'none';
+  placeholder?: string;
+  field?: string;
+}
+
+interface AvatarProfile {
+  id: string; name: string; gender: string; personality: string;
+}
+
+const AVATARS: AvatarProfile[] = [
+  { id: 'tshepo', name: 'Tshepo', gender: 'Male', personality: 'Warm, confident and straight-talking.' },
+  { id: 'palesa', name: 'Palesa', gender: 'Female', personality: 'Caring, detail-oriented and reassuring.' },
 ];
 
+type StepKey =
+  | 'choose_avatar' | 'greeting'
+  | 'id_number' | 'whatsapp_number'
+  | 'consent_step' | 'otp_step'
+  | 'submitting' | 'payment_step' | 'done';
+
+// ── Bold text renderer ───────────────────────────────────────────────────
+function BoldText({ text, style }: { text: string; style?: object }) {
+  const parts = text.split(/(<b>.*?<\/b>)/g);
+  return (
+    <Text style={[styles.msgText, style]}>
+      {parts.map((part, i) => {
+        if (part.startsWith('<b>') && part.endsWith('</b>'))
+          return <Text key={i} style={{ fontWeight: '700' }}>{part.slice(3, -4)}</Text>;
+        return part;
+      })}
+    </Text>
+  );
+}
+
+// ── Avatar fallback circle ───────────────────────────────────────────────
+function AvatarCircle({ avatar, size = 30 }: { avatar: AvatarProfile; size?: number }) {
+  const bg = avatar.id === 'tshepo' ? '#6d28d9' : '#a78bfa';
+  return (
+    <View style={{ width: size, height: size, borderRadius: size * 0.3, backgroundColor: bg, justifyContent: 'center', alignItems: 'center' }}>
+      <Text style={{ color: '#fff', fontWeight: '700', fontSize: size * 0.42 }}>{avatar.name[0]}</Text>
+    </View>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// MAIN COMPONENT
+// ══════════════════════════════════════════════════════════════════════════
 export default function CreditApplyScreen() {
   const router = useRouter();
-  const { user, userProfile, updateUserProfile } = useAuth();
+  const { user, userProfile, updateUserProfile, isHomeAffairsVerified } = useAuth();
+  const idVerified = isHomeAffairsVerified;
+  const hasPhone = !!(userProfile?.phoneNumber || userProfile?.whatsappNumber);
+  const firstName = userProfile?.firstName || userProfile?.displayName?.split(' ')[0] || 'there';
 
-  const [step, setStep] = useState(1);
-  const [idNumber, setIdNumber] = useState(userProfile?.idNumber || '');
-  const [popiaAccepted, setPopiaAccepted] = useState(false);
+  // ── Chat state ──────────────────────────────────────────────────────
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [currentStep, setCurrentStep] = useState<StepKey>('choose_avatar');
+  const [textInput, setTextInput] = useState('');
+  const [isTyping, setIsTyping] = useState(false);
+  const scrollRef = useRef<ScrollView>(null);
+  const [data, setData] = useState<Record<string, string>>({});
+  const [selectedAvatar, setSelectedAvatar] = useState<AvatarProfile>(AVATARS[0]);
+  const [avatarChosen, setAvatarChosen] = useState(false);
+  const [pendingStep, setPendingStep] = useState<{ step: StepKey; extra?: Record<string, string> } | null>(null);
+
+  // Consent & OTP
+  const [popiaConsent, setPopiaConsent] = useState(false);
   const [creditConsent, setCreditConsent] = useState(false);
-  const [processing, setProcessing] = useState(false);
-
-  // OTP state
   const [otpId, setOtpId] = useState('');
   const [otpInput, setOtpInput] = useState(['', '', '', '', '', '']);
   const otpRefs = useRef<(TextInput | null)[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
 
-  // Payment state
+  // Payment
   const [paymentUrl, setPaymentUrl] = useState('');
   const [paymentId, setPaymentId] = useState('');
-  const [paymentStatus, setPaymentStatus] = useState<'pending' | 'polling' | 'complete' | 'cancelled' | ''>('');
+  const [paymentStatus, setPaymentStatus] = useState<'pending' | 'polling' | 'complete' | 'cancelled' | 'timeout' | ''>('');
 
-  const canProceed = () => {
+  // Pre-fill from profile
+  useEffect(() => {
+    if (!userProfile) return;
+    const d: Record<string, string> = {};
+    if (userProfile.idNumber && isValidSAID(userProfile.idNumber)) d.idNumber = userProfile.idNumber;
+    if (userProfile.phoneNumber) d.whatsappNumber = userProfile.phoneNumber;
+    else if (userProfile.whatsappNumber) d.whatsappNumber = userProfile.whatsappNumber;
+    if (Object.keys(d).length) setData((prev) => ({ ...prev, ...d }));
+  }, [userProfile]);
+
+  const scrollToBottom = useCallback(() => {
+    setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 150);
+  }, []);
+
+  const addBotMessage = useCallback((text: string, opts?: Partial<ChatMessage>) => {
+    setIsTyping(true);
+    setTimeout(() => {
+      setIsTyping(false);
+      setMessages((m) => [...m, { id: `b-${Date.now()}-${Math.random()}`, from: 'bot', text, ...opts }]);
+      scrollToBottom();
+    }, 500 + Math.random() * 400);
+  }, [scrollToBottom]);
+
+  const addUserMessage = useCallback((text: string) => {
+    setMessages((m) => [...m, { id: `u-${Date.now()}`, from: 'user', text }]);
+    scrollToBottom();
+  }, [scrollToBottom]);
+
+  // ── Pending step effect ─────────────────────────────────────────────
+  useEffect(() => {
+    if (!pendingStep) return;
+    const t = setTimeout(() => { progressTo(pendingStep.step, pendingStep.extra); setPendingStep(null); }, 600);
+    return () => clearTimeout(t);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingStep]);
+
+  // ── Avatar selection ────────────────────────────────────────────────
+  const handleAvatarSelect = (av: AvatarProfile) => {
+    setSelectedAvatar(av);
+    setAvatarChosen(true);
+    setTimeout(() => {
+      addBotMessage(
+        `Hey ${firstName}! 👋 I'm ${av.name}, and I'll help you get your credit report and AI analysis today.\n\nThe service costs <b>R${CREDIT_PRICE}.00</b> — a once-off fee for your full credit assessment.\n\nLet's get started!`,
+        { inputType: 'none' },
+      );
+      setTimeout(() => setPendingStep({ step: 'id_number' }), 1800);
+    }, 300);
+  };
+
+  // ── Step progression ────────────────────────────────────────────────
+  const progressTo = useCallback((step: StepKey, extra?: Record<string, string>) => {
+    const merged = { ...data, ...extra };
+    if (extra) setData((d) => ({ ...d, ...extra }));
+    setCurrentStep(step);
+
     switch (step) {
-      case 1: return idNumber.length === 13 && isValidSAID(idNumber);
-      case 2: return popiaAccepted && creditConsent;
-      case 3: return otpInput.join('').length === 6;
-      case 4: return true;
-      default: return false;
+      case 'id_number':
+        if (idVerified && merged.idNumber) {
+          const di = extractDobFromId(merged.idNumber);
+          const g = extractGenderFromId(merged.idNumber);
+          addBotMessage(`ID Verified ✅\n🆔 ${merged.idNumber}\n📅 ${di?.dob || ''} • Age: ${di?.age || ''}\n♀♂ ${g || ''}`, { inputType: 'none' });
+          setData((d) => ({ ...d, idNumber: merged.idNumber!, dob: di?.dob || '', age: String(di?.age || ''), gender: g || '' }));
+          if (hasPhone) setTimeout(() => setPendingStep({ step: 'consent_step' }), 1200);
+          else setTimeout(() => setPendingStep({ step: 'whatsapp_number' }), 1200);
+        } else {
+          addBotMessage("First, I'll need your <b>SA ID Number</b>. This is used to pull your credit report. 🆔", { inputType: 'text', placeholder: '13-digit SA ID', field: 'idNumber' });
+        }
+        break;
+      case 'whatsapp_number':
+        addBotMessage("I need your <b>WhatsApp number</b> to send you an OTP for verification. 📱", { inputType: 'text', placeholder: '082 123 4567', field: 'whatsappNumber' });
+        break;
+      case 'consent_step':
+        addBotMessage("Great! Now I need your consent to proceed. 📋\n\nPlease review the consent terms below.", { inputType: 'none' });
+        break;
+      case 'otp_step':
+        addBotMessage('A 6-digit verification code has been sent to your WhatsApp. Please enter it below. 🔐', { inputType: 'none' });
+        break;
+      case 'submitting':
+        addBotMessage('⏳ Setting up your credit assessment...', { inputType: 'none' });
+        break;
+      case 'payment_step':
+        addBotMessage(`✅ <b>Application submitted!</b>\n\nComplete the payment of <b>R${CREDIT_PRICE}.00</b> below to activate your credit assessment.`, { inputType: 'none' });
+        break;
+      case 'done':
+        addBotMessage('🎉 <b>Payment Confirmed!</b>\n\nYour credit report assessment is now active. Our team will analyse your report and send you the results via WhatsApp.\n\nYou can track progress in <b>My Products</b>.', { inputType: 'none' });
+        break;
     }
-  };
+  }, [data, addBotMessage, idVerified, hasPhone]);
 
-  // ── Step 1 → 2: Save ID
-  const handleIdSubmit = async () => {
-    if (!isValidSAID(idNumber)) {
-      Alert.alert('Invalid ID', 'Please enter a valid 13-digit South African ID number.');
-      return;
-    }
-    setProcessing(true);
-    try {
-      await updateUserProfile({ idNumber, updatedAt: new Date().toISOString() });
-      setStep(2);
-    } catch {
-      Alert.alert('Error', 'Failed to save ID number.');
-    } finally {
-      setProcessing(false);
-    }
-  };
+  // ── Text submit ─────────────────────────────────────────────────────
+  const handleTextSubmit = useCallback(() => {
+    const v = textInput.trim();
+    if (!v) return;
+    setTextInput('');
+    addUserMessage(v);
 
-  // ── Step 2 → 3: Send OTP
-  const handleConsentSubmit = async () => {
-    if (!popiaAccepted || !creditConsent) {
-      Alert.alert('Consent Required', 'Please accept both consent checkboxes.');
-      return;
+    switch (currentStep) {
+      case 'id_number':
+        if (!isValidSAID(v)) {
+          addBotMessage("⚠️ That doesn't look right. Please enter a valid 13-digit SA ID number.", { inputType: 'text', placeholder: '13-digit SA ID', field: 'idNumber' });
+          return;
+        }
+        {
+          const di = extractDobFromId(v);
+          const g = extractGenderFromId(v);
+          addBotMessage(`📅 DOB: ${di?.dob || 'N/A'} • Age: ${di?.age || 'N/A'} • Gender: ${g || 'N/A'}`, { inputType: 'none' });
+          if (hasPhone) {
+            setPendingStep({ step: 'consent_step', extra: { idNumber: v, dob: di?.dob || '', age: String(di?.age || ''), gender: g || '' } });
+          } else {
+            setPendingStep({ step: 'whatsapp_number', extra: { idNumber: v, dob: di?.dob || '', age: String(di?.age || ''), gender: g || '' } });
+          }
+        }
+        break;
+      case 'whatsapp_number':
+        if (v.replace(/\D/g, '').length < 10) {
+          addBotMessage('⚠️ Please enter a valid phone number (at least 10 digits).', { inputType: 'text', placeholder: '082 123 4567', field: 'whatsappNumber' });
+          return;
+        }
+        setPendingStep({ step: 'consent_step', extra: { whatsappNumber: v } });
+        break;
+      default: break;
     }
-    const phone = userProfile?.phoneNumber || userProfile?.whatsappNumber || '';
-    setProcessing(true);
+  }, [textInput, currentStep, addUserMessage, addBotMessage, hasPhone]);
+
+  // ── Consent → Send OTP ──────────────────────────────────────────────
+  const handleSendOtp = async () => {
+    setError('');
+    if (!popiaConsent || !creditConsent) { setError('Please accept both consent checkboxes.'); return; }
+    setLoading(true);
     try {
-      const result = await sendWhatsAppOtp(phone, OTP_PURPOSE);
+      const phoneToUse = userProfile?.phoneNumber || userProfile?.whatsappNumber || data.whatsappNumber || '';
+      const result = await sendWhatsAppOtp(phoneToUse, OTP_PURPOSE);
       if (result.success) {
         setOtpId(result.otpId);
-        setStep(3);
+        setCurrentStep('otp_step');
+        addBotMessage('A 6-digit code has been sent to your WhatsApp. Enter it below. 🔐', { inputType: 'none' });
       } else {
-        Alert.alert('OTP Error', result.message || 'Failed to send OTP.');
+        setError(result.message || 'Failed to send OTP.');
       }
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'Failed to send OTP.';
-      Alert.alert('Error', msg);
-    } finally {
-      setProcessing(false);
-    }
+      setError(err instanceof Error ? err.message : 'Failed to send OTP.');
+    } finally { setLoading(false); }
   };
 
-  const handleResendOtp = async () => {
-    const phone = userProfile?.phoneNumber || userProfile?.whatsappNumber || '';
-    setProcessing(true);
-    try {
-      const result = await sendWhatsAppOtp(phone, OTP_PURPOSE);
-      if (result.success) {
-        setOtpId(result.otpId);
-        setOtpInput(['', '', '', '', '', '']);
-        Alert.alert('OTP Sent', 'A new OTP has been sent to your WhatsApp.');
-      } else {
-        Alert.alert('Error', result.message || 'Failed to resend OTP.');
-      }
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'Failed to resend OTP.';
-      Alert.alert('Error', msg);
-    } finally {
-      setProcessing(false);
-    }
+  // ── OTP handlers ────────────────────────────────────────────────────
+  const handleOtpChange = (i: number, v: string) => {
+    if (!/^\d*$/.test(v)) return;
+    const n = [...otpInput]; n[i] = v.slice(-1); setOtpInput(n);
+    if (v && i < 5) otpRefs.current[i + 1]?.focus();
   };
 
-  // ── Step 3 → 4: Verify OTP + create records + generate payment
-  const handleOtpSubmit = async () => {
+  const maskedPhone = (() => {
+    const ph = userProfile?.phoneNumber || userProfile?.whatsappNumber || data.whatsappNumber || '';
+    return ph ? ph.slice(0, 3) + '****' + ph.slice(-3) : '';
+  })();
+
+  // ── Verify OTP → Submit ─────────────────────────────────────────────
+  const handleVerifyOtp = async () => {
+    setError('');
     const entered = otpInput.join('');
-    if (entered.length !== 6) {
-      Alert.alert('Invalid OTP', 'Please enter the full 6-digit OTP.');
-      return;
-    }
+    if (entered.length !== 6) { setError('Enter the full 6-digit code.'); return; }
     if (!user || !userProfile) return;
 
-    setProcessing(true);
+    setLoading(true);
     try {
-      // 1. Verify OTP
       const verifyResult = await verifyWhatsAppOtp(otpId, entered);
       if (!verifyResult.verified) {
         const remaining = verifyResult.attemptsRemaining;
-        Alert.alert('Invalid OTP',
-          remaining !== undefined
-            ? `${verifyResult.message} (${remaining} attempts remaining)`
-            : verifyResult.message || 'Invalid OTP.',
-        );
-        setProcessing(false);
+        setError(remaining !== undefined ? `${verifyResult.message} (${remaining} attempts remaining)` : verifyResult.message || 'Invalid code.');
+        setLoading(false);
         return;
       }
+
+      addUserMessage('OTP verified ✅');
+      setCurrentStep('submitting');
+      addBotMessage('⏳ Setting up your credit assessment...', { inputType: 'none' });
 
       const uid = user.uid;
       const now = new Date().toISOString();
       const fullName = `${userProfile.firstName || ''} ${userProfile.lastName || ''}`.trim() || userProfile.displayName;
-      const surname = userProfile.lastName || userProfile.displayName.split(' ').pop() || '';
-      const phone = normalizePhone(userProfile.phoneNumber || userProfile.whatsappNumber || '');
+      const surname = userProfile.lastName || userProfile.displayName?.split(' ').pop() || '';
+      const phoneToUse = userProfile.phoneNumber || userProfile.whatsappNumber || data.whatsappNumber || '';
+      const phone = normalizePhone(phoneToUse);
 
-      await updateUserProfile({
-        idNumber,
-        fullName,
-        lastName: surname,
-        phoneNumber: phone,
-        popiaConsent: true,
-        popiaConsentTimestamp: now,
-        creditClinicAppliedAt: now,
-        updatedAt: now,
-      } as Record<string, unknown>);
-
-      // 2. Save consent
+      // Save consent record
       const consentRef = doc(collection(db, 'profiles', uid, 'consents'));
       await setDoc(consentRef, {
-        consentId: consentRef.id,
-        consentType: 'credit_report',
-        fullName, surname, idNumber,
-        popiaConsent: true, creditReportConsent: true,
-        whatsAppContactConsent: true,
-        otpVerified: true, otpCode: otpId,
-        otpVerifiedAt: verifyResult.verifiedAt || now,
-        consentGrantedAt: now, channel: 'mobile' as const, createdAt: now,
+        consentId: consentRef.id, consentType: 'credit_report',
+        fullName, surname, idNumber: data.idNumber,
+        clientPhone: phone, popiaConsent: true, creditReportConsent: true,
+        whatsAppContactConsent: true, otpVerified: true, otpCode: otpId,
+        otpVerifiedAt: verifyResult.verifiedAt || now, consentGrantedAt: now,
+        purpose: 'Credit Clinic Assessment',
+        status: 'active', channel: 'mobile', createdAt: now,
       });
 
-      // 3. Consent PDF (non-blocking)
+      // Consent PDF (non-blocking)
       const clientId = generateClientId();
+      let consentPdfResult: { consent_uid?: string; document_url?: string; document_hash?: string } = {};
       try {
-        await fetch(CONSENT_FORM_URL, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+        const pdfRes = await fetch(CONSENT_FORM_URL, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            client_id: clientId,
-            wa_id: verifyResult.waId || phone.replace('+', ''),
-            id_number: idNumber,
-            full_name: fullName,
-            cell_number: phone,
-            otp_code: entered,
-            otp_verified_at: verifyResult.verifiedAt || now,
+            client_id: clientId, wa_id: verifyResult.waId || phone.replace('+', ''),
+            id_number: data.idNumber, full_name: fullName, cell_number: phone,
+            otp_code: entered, otp_verified_at: verifyResult.verifiedAt || now,
             message_id: `mobile-otp-${Date.now()}`,
-            purpose: 'Credit Clinic Assessment',
-            form_type: 'credit_check',
+            purpose: 'Credit Clinic Assessment', form_type: 'credit_check',
           }),
         });
+        if (pdfRes.ok) consentPdfResult = await pdfRes.json();
       } catch { /* non-blocking */ }
 
-      // 4. clientProducts record
-      const productRef = doc(collection(db, 'clientProducts'));
+      if (consentPdfResult.consent_uid) {
+        await updateUserProfile({
+          latestConsentUid: consentPdfResult.consent_uid,
+          latestConsentDocumentUrl: consentPdfResult.document_url,
+          latestConsentDocumentHash: consentPdfResult.document_hash,
+          updatedAt: now,
+        } as Record<string, unknown>);
+      }
+
+      // Write application
       const reference = `CR-${uid.slice(0, 8)}-${consentRef.id}`;
-      await setDoc(productRef, {
-        productApplicationId: productRef.id,
-        productType: 'credit_repair',
-        productName: 'Credit Repair',
+      const appRef = doc(collection(db, 'profiles', uid, 'applications'));
+      await setDoc(appRef, {
+        applicationId: appRef.id,
+        productType: 'credit_repair', productName: 'Credit Clinic',
         productDescription: 'Credit Report Assessment & Analysis',
         status: 'pending_payment', statusLabel: 'Pending Payment',
-        idNumber, waId: verifyResult.waId || userProfile.waId || null,
+        applicationData: { idNumber: data.idNumber, fullName, phone, consentId: consentRef.id },
+        consent: {
+          consentId: consentRef.id, consentType: 'credit_report',
+          otpVerified: true, otpCode: otpId,
+          otpVerifiedAt: verifyResult.verifiedAt || now, consentGrantedAt: now,
+        },
+        consentFormDocumentUrl: consentPdfResult.document_url || null,
+        consentFormUid: consentPdfResult.consent_uid || null,
+        consentFormDocumentHash: consentPdfResult.document_hash || null,
+        reference,
+        idNumber: data.idNumber,
+        waId: verifyResult.waId || (userProfile as unknown as Record<string, unknown>).waId || null,
         uid, email: userProfile.email, clientName: fullName,
-        channel: 'mobile', reference, consentId: consentRef.id,
+        amount: CREDIT_PRICE, channel: 'mobile',
         referredBy: (userProfile as unknown as { referredBy?: string }).referredBy || null,
-        paymentId: null, amount: CREDIT_PRICE,
-        createdAt: now, updatedAt: now, paidAt: null, completedAt: null,
+        createdAt: now, updatedAt: now,
       });
 
-      // 5. Generate payment link
+      // Update activeProducts on profile
+      await updateUserProfile({
+        [`activeProducts.credit_repair`]: {
+          applicationId: appRef.id, productType: 'credit_repair',
+          status: 'pending_payment', statusLabel: 'Pending Payment',
+          reference, createdAt: now, updatedAt: now,
+        },
+        applicationSubmittedAt: now, updatedAt: now,
+      } as Record<string, unknown>);
+
+      // Generate payment link
+      let payRes: { paymentId?: string; paymentUrl?: string } = {};
       try {
         const payData = await generatePaymentLink({
           amount: CREDIT_PRICE,
           itemName: 'Credit Report Assessment',
           itemDescription: 'MyBenefitz Credit Clinic - Credit Report & Analysis',
-          reference,
-          productType: 'credit_repair',
+          reference: `${reference}-ATT1`, productType: 'credit_repair',
         });
-        if (payData.paymentUrl) setPaymentUrl(payData.paymentUrl);
-        if (payData.paymentId) {
-          setPaymentId(payData.paymentId);
-          setPaymentStatus('pending');
-        }
-      } catch (payErr) {
-        console.warn('[CreditApply] Payment link failed:', payErr);
-      }
+        payRes = { paymentId: payData.paymentId, paymentUrl: payData.paymentUrl };
+      } catch { /* non-fatal */ }
 
-      setStep(4);
+      if (payRes.paymentId) setPaymentId(payRes.paymentId);
+      if (payRes.paymentUrl) { setPaymentUrl(payRes.paymentUrl); setPaymentStatus('pending'); }
+
+      setCurrentStep('payment_step');
+      addBotMessage(`✅ <b>Application submitted!</b>\n\nComplete the payment of <b>R${CREDIT_PRICE}.00</b> below to activate your credit assessment.`, { inputType: 'none' });
     } catch (err) {
-      console.error('[CreditApply] Submit failed:', err);
-      Alert.alert('Error', 'Something went wrong. Please try again.');
-    } finally {
-      setProcessing(false);
-    }
+      console.error('[CreditClinicChat] Submit failed:', err);
+      setError('Something went wrong. Please try again.');
+      setCurrentStep('otp_step');
+    } finally { setLoading(false); }
   };
 
-  // ── Payment
+  // ── Payment handlers ────────────────────────────────────────────────
   const handleOpenPayment = async () => {
     if (!paymentUrl) return;
     await Linking.openURL(paymentUrl);
-
     if (!paymentId) return;
     setPaymentStatus('polling');
     const result = await pollPaymentStatus(paymentId);
     if (result.complete) {
       setPaymentStatus('complete');
-      setStep(5);
+      setCurrentStep('done');
+      addBotMessage('🎉 <b>Payment Confirmed!</b>\n\nYour credit report is now being processed. We\'ll send you the results via WhatsApp.\n\nTrack progress in <b>My Products</b>.', { inputType: 'none' });
     } else {
       setPaymentStatus(result.status === 'CANCELLED' ? 'cancelled' : 'pending');
     }
   };
 
-  const handleNext = async () => {
-    if (step === 1) return handleIdSubmit();
-    if (step === 2) return handleConsentSubmit();
-    if (step === 3) return handleOtpSubmit();
-    if (step === 4) return handleOpenPayment();
-  };
+  // ── Derived ─────────────────────────────────────────────────────────
+  const lastBotMsg = [...messages].reverse().find((m) => m.from === 'bot');
+  const showTextBar = avatarChosen && lastBotMsg?.inputType === 'text'
+    && !['done', 'submitting', 'consent_step', 'otp_step', 'payment_step'].includes(currentStep);
 
-  const handleBack = () => {
-    if (step === 1) {
-      router.back();
-    } else {
-      setStep((s) => s - 1);
-    }
-  };
-
-  const handleOtpChange = (index: number, value: string) => {
-    if (!/^\d*$/.test(value)) return;
-    const newOtp = [...otpInput];
-    newOtp[index] = value.slice(-1);
-    setOtpInput(newOtp);
-    if (value && index < 5) otpRefs.current[index + 1]?.focus();
-  };
-
-  const maskedPhone = (() => {
-    const ph = userProfile?.phoneNumber || userProfile?.whatsappNumber || '';
-    return ph ? ph.slice(0, 3) + '****' + ph.slice(-3) : '';
-  })();
-
-  const dobInfo = isValidSAID(idNumber) ? extractDobFromId(idNumber) : null;
-
+  // ══════════════════════════════════════════════════════════════════════
+  // RENDER
+  // ══════════════════════════════════════════════════════════════════════
   return (
     <ProfileGuard>
-    <SafeAreaView style={styles.container} edges={['bottom']}>
-    <KeyboardAvoidingView style={styles.innerContainer} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
-      {/* Progress */}
-      <View style={styles.progressBar}>
-        {stepLabels.map((_, i) => (
-          <View
-            key={i}
-            style={[
-              styles.progressDot,
-              i + 1 <= step && styles.progressDotActive,
-              i + 1 === step && styles.progressDotCurrent,
-            ]}
-          />
-        ))}
-      </View>
-      <Text style={styles.progressLabel}>Step {Math.min(step, TOTAL_STEPS)} of {TOTAL_STEPS}: {stepLabels[Math.min(step, TOTAL_STEPS) - 1]}</Text>
+    <SafeAreaView style={styles.safeArea} edges={['bottom']}>
+    <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
 
-      <ScrollView style={styles.scrollArea} contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
-        {/* ── Step 1: ID Number ── */}
-        {step === 1 && (
-          <View style={styles.stepContainer}>
-            <View style={styles.stepIconCircle}>
-              <Ionicons name="finger-print" size={28} color={Colors.primary.blue} />
+      {/* ── Avatar chooser ─────────────────────────────────────────── */}
+      {!avatarChosen && (
+        <ScrollView contentContainerStyle={styles.avatarScreen}>
+          <View style={styles.avatarCard}>
+            <View style={styles.avatarBadge}>
+              <Ionicons name="card" size={13} color={ACCENT} />
+              <Text style={styles.avatarBadgeText}>Credit Clinic — Chat Mode</Text>
             </View>
-            <Text style={styles.stepTitle}>Your 13-Digit SA ID Number</Text>
-            <Text style={styles.stepDesc}>We need your ID number to pull your credit profile securely.</Text>
-            <TextInput
-              style={styles.input}
-              value={idNumber}
-              onChangeText={(v) => setIdNumber(v.replace(/\D/g, '').slice(0, 13))}
-              placeholder="e.g. 9001015009087"
-              placeholderTextColor={Colors.text.light}
-              keyboardType="number-pad"
-              maxLength={13}
-            />
-            <Text style={styles.inputHint}>{idNumber.length}/13 digits</Text>
-            {dobInfo && (
-              <View style={styles.paymentNote}>
-                <Ionicons name="information-circle" size={16} color={Colors.primary.blue} />
-                <Text style={styles.paymentNoteText}>DOB: {dobInfo.dob} • Age: {dobInfo.age}</Text>
-              </View>
-            )}
-          </View>
-        )}
-
-        {/* ── Step 2: Consent ── */}
-        {step === 2 && (
-          <View style={styles.stepContainer}>
-            <View style={styles.stepIconCircle}>
-              <Ionicons name="lock-closed" size={28} color={Colors.primary.blue} />
-            </View>
-            <Text style={styles.stepTitle}>Consent &amp; Disclosure</Text>
-            <Text style={styles.stepDesc}>Please accept both consents to proceed.</Text>
-
-            <View style={styles.consentCard}>
-              <Text style={styles.consentText}>
-                I consent to MyBenefitz processing my personal information in accordance with POPIA for the purpose of obtaining and analysing my credit report.
-              </Text>
-            </View>
-
-            <TouchableOpacity style={styles.checkboxRow} onPress={() => setPopiaAccepted(!popiaAccepted)} activeOpacity={0.7}>
-              <View style={[styles.checkbox, popiaAccepted && styles.checkboxChecked]}>
-                {popiaAccepted && <Ionicons name="checkmark" size={16} color="#fff" />}
-              </View>
-              <Text style={styles.checkboxLabel}>I provide my POPIA consent</Text>
-            </TouchableOpacity>
-
-            <View style={[styles.consentCard, { marginTop: 16 }]}>
-              <Text style={styles.consentText}>
-                I authorise MyBenefitz to access my credit report from the VCCB credit bureau on my behalf, including credit score, account history, and payment records.
-              </Text>
-            </View>
-
-            <TouchableOpacity style={styles.checkboxRow} onPress={() => setCreditConsent(!creditConsent)} activeOpacity={0.7}>
-              <View style={[styles.checkbox, creditConsent && styles.checkboxChecked]}>
-                {creditConsent && <Ionicons name="checkmark" size={16} color="#fff" />}
-              </View>
-              <Text style={styles.checkboxLabel}>I authorise credit report access</Text>
-            </TouchableOpacity>
-
-            <View style={[styles.paymentNote, { marginTop: 16 }]}>
-              <Ionicons name="information-circle" size={16} color={Colors.primary.blue} />
-              <Text style={styles.paymentNoteText}>A once-off fee of R{CREDIT_PRICE}.00 is payable after OTP verification.</Text>
-            </View>
-          </View>
-        )}
-
-        {/* ── Step 3: OTP Verification ── */}
-        {step === 3 && (
-          <View style={styles.stepContainer}>
-            <View style={styles.stepIconCircle}>
-              <Ionicons name="chatbubble-ellipses" size={28} color={Colors.primary.blue} />
-            </View>
-            <Text style={styles.stepTitle}>Verify Your Identity</Text>
-            <Text style={styles.stepDesc}>Enter the 6-digit OTP sent to your WhatsApp {maskedPhone}</Text>
-
-            <View style={styles.otpRow}>
-              {otpInput.map((digit, i) => (
-                <TextInput
-                  key={i}
-                  ref={(el) => { otpRefs.current[i] = el; }}
-                  style={styles.otpBox}
-                  value={digit}
-                  onChangeText={(v) => handleOtpChange(i, v)}
-                  onKeyPress={(e) => {
-                    if (e.nativeEvent.key === 'Backspace' && !otpInput[i] && i > 0) {
-                      otpRefs.current[i - 1]?.focus();
-                    }
-                  }}
-                  keyboardType="number-pad"
-                  maxLength={1}
-                  textAlign="center"
-                />
+            <Text style={styles.avatarTitle}>Choose Your Assistant</Text>
+            <Text style={styles.avatarSubtitle}>
+              Pick who you'd like to guide you through the credit assessment process.
+            </Text>
+            <View style={styles.avatarGrid}>
+              {AVATARS.map((av) => (
+                <TouchableOpacity key={av.id} style={styles.avatarOption} onPress={() => handleAvatarSelect(av)} activeOpacity={0.7}>
+                  <AvatarCircle avatar={av} size={52} />
+                  <Text style={styles.avatarName}>{av.name}</Text>
+                  <Text style={styles.avatarGender}>{av.gender} Digital Assistant</Text>
+                  <Text style={styles.avatarPersonality}>{av.personality}</Text>
+                  <View style={styles.avatarCta}>
+                    <Text style={styles.avatarCtaText}>Chat with {av.name}</Text>
+                  </View>
+                </TouchableOpacity>
               ))}
             </View>
+            <View style={styles.feeNote}>
+              <Ionicons name="information-circle" size={14} color={ACCENT} />
+              <Text style={styles.feeNoteText}>
+                <Text style={{ fontWeight: '700' }}>Service Fee:</Text> R{CREDIT_PRICE}.00 once-off for your full credit report assessment and AI analysis.
+              </Text>
+            </View>
+          </View>
+        </ScrollView>
+      )}
 
-            <Text style={[styles.inputHint, { marginTop: 12 }]}>OTP is valid for 10 minutes. Check your WhatsApp.</Text>
-
-            <TouchableOpacity onPress={handleResendOtp} disabled={processing} style={{ marginTop: 12 }}>
-              <Text style={{ color: Colors.primary.blue, fontWeight: '600', fontSize: 14 }}>Resend OTP</Text>
+      {/* ── Chat container ─────────────────────────────────────────── */}
+      {avatarChosen && (
+        <View style={styles.chatWrap}>
+          {/* Header */}
+          <View style={styles.chatHeader}>
+            <AvatarCircle avatar={selectedAvatar} size={34} />
+            <View style={{ flex: 1 }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                <Text style={styles.headerName}>{selectedAvatar.name}</Text>
+                <View style={styles.aiBadge}><Text style={styles.aiBadgeText}>AI</Text></View>
+                <View style={styles.onlineDot} />
+              </View>
+              <Text style={styles.headerSub}>Credit Clinic — Assessment</Text>
+            </View>
+            <TouchableOpacity onPress={() => router.back()} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+              <Ionicons name="close" size={22} color="rgba(255,255,255,0.7)" />
             </TouchableOpacity>
           </View>
-        )}
 
-        {/* ── Step 4: Payment ── */}
-        {step === 4 && (
-          <View style={styles.stepContainer}>
-            <View style={styles.stepIconCircle}>
-              <Ionicons name="card" size={28} color={Colors.primary.blue} />
-            </View>
-            <Text style={styles.stepTitle}>Complete Payment</Text>
-            <Text style={styles.stepDesc}>Credit Report Assessment — once-off fee</Text>
-
-            <View style={styles.paymentSummary}>
-              <View style={styles.paymentRow}>
-                <Text style={styles.paymentLabel}>Credit Report Assessment</Text>
-                <Text style={styles.paymentAmount}>R{CREDIT_PRICE}.00</Text>
-              </View>
-              <View style={styles.paymentDivider} />
-              <View style={styles.paymentRow}>
-                <Text style={styles.paymentTotalLabel}>Total</Text>
-                <Text style={styles.paymentTotalAmount}>R{CREDIT_PRICE}.00</Text>
-              </View>
-            </View>
-
-            {paymentStatus === 'polling' && (
-              <View style={[styles.paymentNote, { backgroundColor: Colors.primary.blue + '10' }]}>
-                <ActivityIndicator size="small" color={Colors.primary.blue} />
-                <Text style={styles.paymentNoteText}>Waiting for payment confirmation...</Text>
-              </View>
-            )}
-            {paymentStatus === 'cancelled' && (
-              <View style={[styles.paymentNote, { backgroundColor: Colors.status.error + '10' }]}>
-                <Ionicons name="close-circle" size={16} color={Colors.status.error} />
-                <Text style={styles.paymentNoteText}>Payment was cancelled. You can try again.</Text>
-              </View>
-            )}
-            {paymentStatus !== 'polling' && (
-              <View style={styles.paymentNote}>
-                <Ionicons name="shield-checkmark" size={16} color={Colors.status.success} />
-                <Text style={styles.paymentNoteText}>Secure PayFast payment. Your card details are never stored.</Text>
-              </View>
-            )}
+          <View style={styles.disclaimerBar}>
+            <Ionicons name="information-circle" size={12} color="#d97706" />
+            <Text style={styles.disclaimerText}>{selectedAvatar.name} is an AI assistant — does not provide financial advice.</Text>
           </View>
-        )}
 
-        {/* ── Step 5: Complete ── */}
-        {step === 5 && (
-          <View style={styles.stepContainer}>
-            <View style={[styles.stepIconCircle, { backgroundColor: Colors.status.success + '15' }]}>
-              <Ionicons name="checkmark-circle" size={36} color={Colors.status.success} />
-            </View>
-            <Text style={styles.stepTitle}>{paymentStatus === 'complete' ? 'Payment Successful!' : 'Application Submitted!'}</Text>
-            <Text style={styles.stepDesc}>
-              Your Credit Report Assessment is now active. We'll process your assessment and share it with you via WhatsApp.
-            </Text>
+          {/* Messages */}
+          <ScrollView ref={scrollRef} style={styles.msgScroll} contentContainerStyle={styles.msgScrollContent} showsVerticalScrollIndicator={false}>
+            {messages.map((msg) => (
+              <View key={msg.id} style={[styles.msgRow, msg.from === 'user' ? styles.msgRowUser : styles.msgRowBot]}>
+                {msg.from === 'bot' && <AvatarCircle avatar={selectedAvatar} size={24} />}
+                <View style={msg.from === 'bot' ? styles.bubbleBot : styles.bubbleUser}>
+                  <BoldText text={msg.text} />
+                </View>
+              </View>
+            ))}
 
-            <View style={styles.completeCard}>
-              <Text style={styles.completeCardTitle}>What happens next?</Text>
-              <CompleteStep num="1" text="We pull your credit report securely" />
-              <CompleteStep num="2" text="Our team reviews your credit profile" />
-              <CompleteStep num="3" text="You receive your assessment via WhatsApp" />
-              <CompleteStep num="4" text="We explain your recommended options" />
-              <CompleteStep num="5" text="You may accept or decline any further services" />
-            </View>
-
-            <TouchableOpacity style={styles.doneButton} onPress={() => router.back()} activeOpacity={0.8}>
-              <Text style={styles.doneButtonText}>Back to Credit Clinic</Text>
-            </TouchableOpacity>
-          </View>
-        )}
-      </ScrollView>
-
-      {/* Bottom nav (not shown on completion step) */}
-      {step < 5 && (
-        <View style={styles.bottomNav}>
-          <TouchableOpacity style={styles.backBtn} onPress={handleBack} activeOpacity={0.7}>
-            <Ionicons name="arrow-back" size={20} color={Colors.text.secondary} />
-            <Text style={styles.backBtnText}>{step === 1 ? 'Cancel' : 'Back'}</Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={[styles.nextBtn, !canProceed() && styles.nextBtnDisabled]}
-            onPress={handleNext}
-            disabled={!canProceed() || processing}
-            activeOpacity={0.8}
-          >
-            {processing ? (
-              <ActivityIndicator color="#fff" size="small" />
-            ) : (
-              <>
-                <Text style={styles.nextBtnText}>
-                  {step === 2 ? 'Accept & Send OTP' : step === 3 ? 'Verify OTP' : step === 4 ? `Pay R${CREDIT_PRICE}` : 'Continue'}
-                </Text>
-                <Ionicons name="arrow-forward" size={18} color="#fff" />
-              </>
+            {isTyping && (
+              <View style={[styles.msgRow, styles.msgRowBot]}>
+                <AvatarCircle avatar={selectedAvatar} size={24} />
+                <View style={styles.bubbleBot}>
+                  <Text style={styles.typingDots}>• • •</Text>
+                </View>
+              </View>
             )}
-          </TouchableOpacity>
+
+            {/* ── Consent inline form ─────────────────────────────── */}
+            {currentStep === 'consent_step' && (
+              <View style={styles.inlineCard}>
+                <View style={styles.inlineHeader}>
+                  <Ionicons name="shield-checkmark" size={16} color={ACCENT} />
+                  <Text style={styles.inlineTitle}>Consent & Authorization</Text>
+                </View>
+                <TouchableOpacity style={styles.checkRow} onPress={() => setPopiaConsent(!popiaConsent)} activeOpacity={0.7}>
+                  <View style={[styles.checkbox, popiaConsent && styles.checkboxOn]}>
+                    {popiaConsent && <Ionicons name="checkmark" size={14} color="#fff" />}
+                  </View>
+                  <Text style={styles.checkLabel}>I consent to the processing of my personal information in terms of POPIA.</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={styles.checkRow} onPress={() => setCreditConsent(!creditConsent)} activeOpacity={0.7}>
+                  <View style={[styles.checkbox, creditConsent && styles.checkboxOn]}>
+                    {creditConsent && <Ionicons name="checkmark" size={14} color="#fff" />}
+                  </View>
+                  <Text style={styles.checkLabel}>I authorise MyBenefitz to access my credit report from the VCCB credit bureau.</Text>
+                </TouchableOpacity>
+                {maskedPhone ? <Text style={styles.phoneHint}>A verification code will be sent to <Text style={{ fontWeight: '600' }}>{maskedPhone}</Text></Text> : null}
+                {error ? <Text style={styles.errorText}>{error}</Text> : null}
+                <TouchableOpacity
+                  style={[styles.primaryBtn, !(popiaConsent && creditConsent) && styles.primaryBtnOff]}
+                  onPress={handleSendOtp}
+                  disabled={!(popiaConsent && creditConsent) || loading}
+                  activeOpacity={0.8}
+                >
+                  {loading ? <ActivityIndicator color="#fff" size="small" /> : <Text style={styles.primaryBtnText}>Send Verification Code</Text>}
+                </TouchableOpacity>
+              </View>
+            )}
+
+            {/* ── OTP inline form ─────────────────────────────────── */}
+            {currentStep === 'otp_step' && (
+              <View style={styles.inlineCard}>
+                <Text style={styles.inlineTitle}>Enter Verification Code</Text>
+                <Text style={styles.otpHint}>Sent to {maskedPhone} via WhatsApp</Text>
+                <View style={styles.otpRow}>
+                  {otpInput.map((d, i) => (
+                    <TextInput
+                      key={i}
+                      ref={(el) => { otpRefs.current[i] = el; }}
+                      style={styles.otpBox}
+                      value={d}
+                      onChangeText={(v) => handleOtpChange(i, v)}
+                      keyboardType="number-pad"
+                      maxLength={1}
+                      textAlign="center"
+                      onKeyPress={(e) => { if (e.nativeEvent.key === 'Backspace' && !otpInput[i] && i > 0) otpRefs.current[i - 1]?.focus(); }}
+                    />
+                  ))}
+                </View>
+                {error ? <Text style={styles.errorText}>{error}</Text> : null}
+                <TouchableOpacity
+                  style={[styles.primaryBtn, otpInput.join('').length !== 6 && styles.primaryBtnOff]}
+                  onPress={handleVerifyOtp}
+                  disabled={otpInput.join('').length !== 6 || loading}
+                  activeOpacity={0.8}
+                >
+                  {loading ? <ActivityIndicator color="#fff" size="small" /> : <Text style={styles.primaryBtnText}>Verify & Submit</Text>}
+                </TouchableOpacity>
+              </View>
+            )}
+
+            {/* ── Payment inline ──────────────────────────────────── */}
+            {currentStep === 'payment_step' && (
+              <View style={styles.inlineCard}>
+                <View style={styles.paySummary}>
+                  <View style={styles.payRow}>
+                    <Text style={styles.payLabel}>Credit Report Assessment</Text>
+                    <Text style={styles.payAmt}>R{CREDIT_PRICE}.00</Text>
+                  </View>
+                  <View style={styles.payDivider} />
+                  <View style={styles.payRow}>
+                    <Text style={styles.payTotalLabel}>Total</Text>
+                    <Text style={styles.payTotal}>R{CREDIT_PRICE}.00</Text>
+                  </View>
+                </View>
+                {paymentStatus === 'polling' && (
+                  <View style={styles.statusRow}>
+                    <ActivityIndicator size="small" color={ACCENT} />
+                    <Text style={styles.statusText}>Waiting for payment confirmation...</Text>
+                  </View>
+                )}
+                {paymentStatus === 'cancelled' && (
+                  <View style={styles.statusRow}>
+                    <Ionicons name="close-circle" size={16} color={Colors.status.error} />
+                    <Text style={styles.statusText}>Payment was cancelled. You can try again.</Text>
+                  </View>
+                )}
+                <TouchableOpacity
+                  style={styles.payBtn}
+                  onPress={handleOpenPayment}
+                  disabled={!paymentUrl || paymentStatus === 'polling'}
+                  activeOpacity={0.8}
+                >
+                  <Ionicons name="card" size={18} color="#fff" />
+                  <Text style={styles.payBtnText}>
+                    {paymentStatus === 'polling' ? 'Checking...' : `Pay R${CREDIT_PRICE}.00`}
+                  </Text>
+                </TouchableOpacity>
+                <View style={styles.secureRow}>
+                  <Ionicons name="shield-checkmark" size={12} color={Colors.status.success} />
+                  <Text style={styles.secureText}>Secure PayFast payment. Card details are never stored.</Text>
+                </View>
+              </View>
+            )}
+
+            {/* ── Done CTA ────────────────────────────────────────── */}
+            {currentStep === 'done' && (
+              <View style={styles.inlineCard}>
+                <TouchableOpacity style={styles.primaryBtn} onPress={() => router.back()} activeOpacity={0.8}>
+                  <Text style={styles.primaryBtnText}>Back to Credit Clinic</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+          </ScrollView>
+
+          {/* ── Text input bar ──────────────────────────────────────── */}
+          {showTextBar && (
+            <View style={styles.inputBar}>
+              <TextInput
+                style={styles.textInput}
+                value={textInput}
+                onChangeText={setTextInput}
+                placeholder={lastBotMsg?.placeholder || 'Type your answer...'}
+                placeholderTextColor={Colors.text.light}
+                returnKeyType="send"
+                onSubmitEditing={handleTextSubmit}
+              />
+              <TouchableOpacity
+                style={[styles.sendBtn, !textInput.trim() && styles.sendBtnOff]}
+                onPress={handleTextSubmit}
+                disabled={!textInput.trim()}
+              >
+                <Ionicons name="send" size={18} color="#fff" />
+              </TouchableOpacity>
+            </View>
+          )}
+
+          <View style={styles.footerBar}>
+            <Ionicons name="lock-closed" size={10} color={Colors.text.light} />
+            <Text style={styles.footerText}>Encrypted</Text>
+            <Text style={styles.footerDot}>•</Text>
+            <Text style={styles.footerText}>Powered by MyBenefitz</Text>
+          </View>
         </View>
       )}
+
     </KeyboardAvoidingView>
     </SafeAreaView>
     </ProfileGuard>
   );
 }
 
-function TermItem({ num, text }: { num: string; text: string }) {
-  return (
-    <View style={termStyles.row}>
-      <View style={termStyles.numCircle}>
-        <Text style={termStyles.num}>{num}</Text>
-      </View>
-      <Text style={termStyles.text}>{text}</Text>
-    </View>
-  );
-}
-
-function CompleteStep({ num, text }: { num: string; text: string }) {
-  return (
-    <View style={termStyles.row}>
-      <View style={[termStyles.numCircle, { backgroundColor: Colors.status.success + '15', borderColor: Colors.status.success + '30' }]}>
-        <Text style={[termStyles.num, { color: Colors.status.success }]}>{num}</Text>
-      </View>
-      <Text style={termStyles.text}>{text}</Text>
-    </View>
-  );
-}
-
-const termStyles = StyleSheet.create({
-  row: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 10,
-    marginBottom: 12,
-  },
-  numCircle: {
-    width: 24,
-    height: 24,
-    borderRadius: 12,
-    backgroundColor: Colors.primary.blue + '10',
-    borderWidth: 1,
-    borderColor: Colors.primary.blue + '20',
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginTop: 1,
-  },
-  num: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: Colors.primary.blue,
-  },
-  text: {
-    flex: 1,
-    fontSize: 13,
-    color: Colors.text.secondary,
-    lineHeight: 19,
-  },
-});
-
+// ══════════════════════════════════════════════════════════════════════════
+// STYLES
+// ══════════════════════════════════════════════════════════════════════════
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: Colors.background.light1,
-  },
-  innerContainer: {
-    flex: 1,
-  },
-  progressBar: {
-    flexDirection: 'row',
-    justifyContent: 'center',
-    gap: 8,
-    paddingTop: 16,
-    paddingBottom: 4,
-    paddingHorizontal: 16,
-  },
-  progressDot: {
-    flex: 1,
-    height: 4,
-    borderRadius: 2,
-    backgroundColor: Colors.border,
-  },
-  progressDotActive: {
-    backgroundColor: Colors.primary.blue + '40',
-  },
-  progressDotCurrent: {
-    backgroundColor: Colors.primary.blue,
-  },
-  progressLabel: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: Colors.text.secondary,
-    textAlign: 'center',
-    marginTop: 6,
-    marginBottom: 8,
-  },
-  scrollArea: { flex: 1 },
-  scrollContent: { flexGrow: 1, padding: 16 },
-  stepContainer: {
-    alignItems: 'center',
-  },
-  stepIconCircle: {
-    width: 64,
-    height: 64,
-    borderRadius: 32,
-    backgroundColor: Colors.primary.blue + '10',
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginBottom: 16,
-  },
-  stepTitle: {
-    fontSize: 20,
-    fontWeight: '800',
-    color: Colors.text.primary,
-    marginBottom: 8,
-    textAlign: 'center',
-  },
-  stepDesc: {
-    fontSize: 13,
-    color: Colors.text.secondary,
-    textAlign: 'center',
-    lineHeight: 19,
-    marginBottom: 24,
-    paddingHorizontal: 8,
-  },
-  input: {
-    width: '100%',
-    backgroundColor: '#fff',
-    borderRadius: 12,
-    paddingHorizontal: 16,
-    paddingVertical: 16,
-    fontSize: 20,
-    fontWeight: '600',
-    color: Colors.text.primary,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    textAlign: 'center',
-    letterSpacing: 2,
-  },
-  inputHint: {
-    fontSize: 12,
-    color: Colors.text.light,
-    marginTop: 8,
-  },
-  consentCard: {
-    width: '100%',
-    backgroundColor: '#fff',
-    borderRadius: 14,
-    padding: 16,
-    marginBottom: 20,
-    borderWidth: 1,
-    borderColor: Colors.border,
-  },
-  consentText: {
-    fontSize: 13,
-    color: Colors.text.secondary,
-    lineHeight: 20,
-    marginBottom: 12,
-  },
-  checkboxRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    width: '100%',
-    paddingVertical: 4,
-  },
-  checkbox: {
-    width: 26,
-    height: 26,
-    borderRadius: 6,
-    borderWidth: 2,
-    borderColor: Colors.border,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  checkboxChecked: {
-    backgroundColor: Colors.primary.blue,
-    borderColor: Colors.primary.blue,
-  },
-  checkboxLabel: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: Colors.text.primary,
-  },
-  termsCard: {
-    width: '100%',
-    backgroundColor: '#fff',
-    borderRadius: 14,
-    padding: 16,
-    marginBottom: 20,
-    borderWidth: 1,
-    borderColor: Colors.border,
-  },
-  paymentSummary: {
-    width: '100%',
-    backgroundColor: '#fff',
-    borderRadius: 14,
-    padding: 20,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    marginBottom: 16,
-  },
-  paymentRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-  paymentLabel: {
-    fontSize: 14,
-    color: Colors.text.secondary,
-  },
-  paymentAmount: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: Colors.text.primary,
-  },
-  paymentDivider: {
-    height: 1,
-    backgroundColor: Colors.border,
-    marginVertical: 14,
-  },
-  paymentTotalLabel: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: Colors.text.primary,
-  },
-  paymentTotalAmount: {
-    fontSize: 20,
-    fontWeight: '800',
-    color: Colors.primary.blue,
-  },
-  otpRow: {
-    flexDirection: 'row',
-    justifyContent: 'center',
-    gap: 10,
-    width: '100%',
-    marginBottom: 8,
-  },
-  otpBox: {
-    width: 46,
-    height: 54,
-    backgroundColor: '#fff',
-    borderRadius: 10,
-    borderWidth: 1.5,
-    borderColor: Colors.border,
-    fontSize: 22,
-    fontWeight: '700',
-    color: Colors.text.primary,
-  },
-  paymentNote: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    width: '100%',
-    backgroundColor: Colors.status.success + '10',
-    padding: 12,
-    borderRadius: 10,
-    marginTop: 12,
-  },
-  paymentNoteText: {
-    flex: 1,
-    fontSize: 12,
-    color: Colors.text.secondary,
-    lineHeight: 17,
-  },
-  completeCard: {
-    width: '100%',
-    backgroundColor: '#fff',
-    borderRadius: 14,
-    padding: 18,
-    marginBottom: 24,
-    borderWidth: 1,
-    borderColor: Colors.border,
-  },
-  completeCardTitle: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: Colors.text.primary,
-    marginBottom: 14,
-  },
-  doneButton: {
-    backgroundColor: Colors.primary.blue,
-    paddingVertical: 14,
-    paddingHorizontal: 36,
-    borderRadius: 12,
-  },
-  doneButtonText: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: '#fff',
-  },
-  bottomNav: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    backgroundColor: '#fff',
-    borderTopWidth: 1,
-    borderTopColor: Colors.border,
-  },
-  backBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    paddingVertical: 10,
-    paddingHorizontal: 4,
-  },
-  backBtnText: {
-    fontSize: 14,
-    fontWeight: '500',
-    color: Colors.text.secondary,
-  },
-  nextBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    backgroundColor: Colors.primary.orange,
-    paddingVertical: 12,
-    paddingHorizontal: 24,
-    borderRadius: 10,
-  },
-  nextBtnDisabled: {
-    backgroundColor: Colors.text.light,
-  },
-  nextBtnText: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: '#fff',
-  },
+  safeArea: { flex: 1, backgroundColor: Colors.background.light1 },
+
+  // Avatar screen
+  avatarScreen: { flexGrow: 1, justifyContent: 'center', padding: 16 },
+  avatarCard: { backgroundColor: '#fff', borderRadius: 16, padding: 24, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.08, shadowRadius: 12, elevation: 3 },
+  avatarBadge: { flexDirection: 'row', alignItems: 'center', gap: 5, alignSelf: 'center', paddingHorizontal: 12, paddingVertical: 4, backgroundColor: ACCENT_BG, borderRadius: 16, marginBottom: 12 },
+  avatarBadgeText: { fontSize: 11, fontWeight: '500', color: ACCENT },
+  avatarTitle: { fontSize: 20, fontWeight: '800', color: Colors.text.primary, textAlign: 'center', marginBottom: 4 },
+  avatarSubtitle: { fontSize: 13, color: Colors.text.secondary, textAlign: 'center', lineHeight: 19, marginBottom: 20 },
+  avatarGrid: { flexDirection: 'row', gap: 12, marginBottom: 16 },
+  avatarOption: { flex: 1, alignItems: 'center', padding: 16, borderRadius: 14, borderWidth: 2, borderColor: Colors.border, gap: 6 },
+  avatarName: { fontSize: 15, fontWeight: '700', color: Colors.text.primary },
+  avatarGender: { fontSize: 10, color: Colors.text.light },
+  avatarPersonality: { fontSize: 11, color: Colors.text.secondary, textAlign: 'center', lineHeight: 15 },
+  avatarCta: { paddingHorizontal: 14, paddingVertical: 6, borderRadius: 8, backgroundColor: ACCENT, marginTop: 4 },
+  avatarCtaText: { color: '#fff', fontWeight: '600', fontSize: 11 },
+  feeNote: { flexDirection: 'row', alignItems: 'flex-start', gap: 6, backgroundColor: ACCENT_BG, borderRadius: 8, padding: 10, borderWidth: 1, borderColor: '#ddd6fe' },
+  feeNoteText: { flex: 1, fontSize: 11, color: '#6d28d9', lineHeight: 16 },
+
+  // Chat wrapper
+  chatWrap: { flex: 1, backgroundColor: '#fff', borderRadius: 12, margin: 4, overflow: 'hidden', borderWidth: 1, borderColor: Colors.border },
+  chatHeader: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 14, paddingVertical: 10, backgroundColor: ACCENT },
+  headerName: { fontWeight: '700', fontSize: 15, color: '#fff' },
+  aiBadge: { backgroundColor: 'rgba(255,255,255,0.25)', paddingHorizontal: 5, paddingVertical: 1, borderRadius: 6 },
+  aiBadgeText: { fontSize: 8, fontWeight: '600', color: '#fff' },
+  onlineDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: '#4ade80' },
+  headerSub: { fontSize: 10, color: 'rgba(255,255,255,0.85)', marginTop: 1 },
+  disclaimerBar: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 4, paddingVertical: 4, paddingHorizontal: 14, backgroundColor: '#fffbeb', borderBottomWidth: 1, borderBottomColor: '#fde68a' },
+  disclaimerText: { fontSize: 9, color: '#92400e' },
+
+  // Messages
+  msgScroll: { flex: 1, backgroundColor: '#f0f2f5' },
+  msgScrollContent: { padding: 14, paddingBottom: 24 },
+  msgRow: { flexDirection: 'row', marginBottom: 10, gap: 6 },
+  msgRowBot: { alignItems: 'flex-start' },
+  msgRowUser: { justifyContent: 'flex-end' },
+  bubbleBot: { backgroundColor: '#fff', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 2, borderTopRightRadius: 12, borderBottomRightRadius: 12, borderBottomLeftRadius: 12, maxWidth: '82%', shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.04, shadowRadius: 2, elevation: 1 },
+  bubbleUser: { backgroundColor: '#ede9fe', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 12, borderBottomRightRadius: 2, maxWidth: '75%' },
+  msgText: { fontSize: 14, color: Colors.text.primary, lineHeight: 20 },
+  typingDots: { fontSize: 18, color: Colors.text.light, letterSpacing: 2 },
+
+  // Inline cards
+  inlineCard: { marginLeft: 30, backgroundColor: '#fff', borderRadius: 12, padding: 16, marginBottom: 10, borderWidth: 1, borderColor: Colors.border, shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.04, shadowRadius: 3, elevation: 1 },
+  inlineHeader: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 14 },
+  inlineTitle: { fontSize: 15, fontWeight: '700', color: Colors.text.primary },
+
+  // Checkbox
+  checkRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 10, marginBottom: 14 },
+  checkbox: { width: 22, height: 22, borderRadius: 5, borderWidth: 2, borderColor: Colors.border, justifyContent: 'center', alignItems: 'center', marginTop: 1 },
+  checkboxOn: { backgroundColor: ACCENT, borderColor: ACCENT },
+  checkLabel: { flex: 1, fontSize: 13, color: Colors.text.secondary, lineHeight: 18 },
+  phoneHint: { fontSize: 12, color: Colors.text.secondary, marginBottom: 10 },
+  errorText: { fontSize: 12, color: Colors.status.error, marginBottom: 10, fontWeight: '500' },
+
+  // Primary button
+  primaryBtn: { backgroundColor: ACCENT, borderRadius: 10, paddingVertical: 13, alignItems: 'center', marginTop: 4 },
+  primaryBtnOff: { opacity: 0.5 },
+  primaryBtnText: { color: '#fff', fontSize: 14, fontWeight: '700' },
+
+  // OTP
+  otpHint: { fontSize: 12, color: Colors.text.secondary, marginBottom: 14 },
+  otpRow: { flexDirection: 'row', justifyContent: 'center', gap: 8, marginBottom: 14 },
+  otpBox: { width: 42, height: 50, backgroundColor: '#f9fafb', borderRadius: 10, borderWidth: 1.5, borderColor: Colors.border, fontSize: 22, fontWeight: '700', color: Colors.text.primary },
+
+  // Payment
+  paySummary: { marginBottom: 14 },
+  payRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  payLabel: { fontSize: 13, color: Colors.text.secondary },
+  payAmt: { fontSize: 13, fontWeight: '600', color: Colors.text.primary },
+  payDivider: { height: 1, backgroundColor: Colors.border, marginVertical: 10 },
+  payTotalLabel: { fontSize: 15, fontWeight: '700', color: Colors.text.primary },
+  payTotal: { fontSize: 20, fontWeight: '800', color: ACCENT },
+  statusRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 12 },
+  statusText: { flex: 1, fontSize: 12, color: Colors.text.secondary },
+  payBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: ACCENT, borderRadius: 10, paddingVertical: 13, marginBottom: 10 },
+  payBtnText: { color: '#fff', fontSize: 15, fontWeight: '700' },
+  secureRow: { flexDirection: 'row', alignItems: 'center', gap: 5 },
+  secureText: { fontSize: 10, color: Colors.text.light },
+
+  // Input bar
+  inputBar: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 10, paddingVertical: 8, borderTopWidth: 1, borderTopColor: Colors.border, backgroundColor: '#fff' },
+  textInput: { flex: 1, backgroundColor: '#f9fafb', borderRadius: 20, paddingHorizontal: 16, paddingVertical: 10, fontSize: 14, color: Colors.text.primary, borderWidth: 1, borderColor: Colors.border },
+  sendBtn: { width: 38, height: 38, borderRadius: 19, backgroundColor: ACCENT, justifyContent: 'center', alignItems: 'center' },
+  sendBtnOff: { backgroundColor: Colors.text.light },
+
+  // Footer
+  footerBar: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 4, paddingVertical: 5, backgroundColor: '#f9fafb', borderTopWidth: 1, borderTopColor: Colors.border },
+  footerText: { fontSize: 9, color: Colors.text.light },
+  footerDot: { fontSize: 9, color: Colors.text.light },
 });

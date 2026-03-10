@@ -17,6 +17,7 @@ import { FontAwesome } from '@expo/vector-icons';
 import { useAuth } from '../../contexts/AuthContext';
 import { Colors } from '../../constants/Colors';
 import { storeReferralCode } from '../../lib/referral';
+import AnimatedAuthBackground from '../../components/AnimatedAuthBackground';
 
 export default function LoginScreen() {
   const [email, setEmail] = useState('');
@@ -95,6 +96,7 @@ export default function LoginScreen() {
       behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
       style={styles.container}
     >
+      <AnimatedAuthBackground />
       <ScrollView contentContainerStyle={styles.scrollContent}>
         <View style={styles.header}>
           <Image
@@ -205,7 +207,7 @@ export default function LoginScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: Colors.background.light1,
+    backgroundColor: 'transparent',
   },
   scrollContent: {
     flexGrow: 1,

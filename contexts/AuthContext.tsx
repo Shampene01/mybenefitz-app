@@ -135,6 +135,10 @@ interface UserProfile {
   phoneNumber?: string;
   whatsappNumber?: string;
   photoURL?: string;
+  title?: string;
+  maritalStatus?: string;
+  highestQualification?: string;
+  occupation?: string;
 
   // --- Unified Schema Fields ---
   linkStatus: 'whatsapp_only' | 'app_only' | 'linked';
