@@ -25,8 +25,9 @@ interface DrawerMenuProps {
 
 const menuItems = [
   { title: 'Dashboard', icon: 'grid-outline', route: '/(tabs)' },
-  { title: 'Products', icon: 'cube-outline', route: '/(tabs)/credit' },
-  { title: 'Buy Now', icon: 'cart-outline', route: '/(tabs)/insurance' },
+  { title: 'My Products', icon: 'briefcase-outline', route: '/my-products' },
+  { title: 'Products', icon: 'cube-outline', route: '/products' },
+  { title: 'Credit Clinic', icon: 'shield-checkmark-outline', route: '/(tabs)/credit' },
   { title: 'Contact Us', icon: 'mail-outline', route: null },
   { title: 'Terms and Conditions', icon: 'document-text-outline', route: null },
 ];

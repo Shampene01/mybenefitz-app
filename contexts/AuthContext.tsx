@@ -13,7 +13,7 @@ import {
   GoogleAuthProvider,
   FacebookAuthProvider,
 } from 'firebase/auth';
-import { doc, setDoc, getDoc } from 'firebase/firestore';
+import { doc, setDoc, getDoc, collection, query, orderBy, getDocs } from 'firebase/firestore';
 import { auth, db } from '../lib/firebase';
 import * as WebBrowser from 'expo-web-browser';
 import * as Google from 'expo-auth-session/providers/google';
@@ -170,6 +170,64 @@ interface UserProfile {
   updatedAt?: string;
 }
 
+export interface ClientProduct {
+  id: string;
+  productType: string;
+  productName: string;
+  productDescription: string;
+  status: string;
+  statusLabel: string;
+  amount?: number;
+  channel: string;
+  reference: string;
+  createdAt: string;
+  updatedAt: string;
+  [key: string]: unknown;
+}
+
+const PRODUCT_NAME_MAP: Record<string, string> = {
+  credit_repair: 'Credit Clinic',
+  life_insurance: 'Life Insurance',
+  funeral_cover: 'Funeral Cover',
+  car_insurance: 'Car Insurance',
+  home_insurance: 'Home Insurance',
+  retirement_annuity: 'Retirement Annuity',
+  tax_free_savings: 'Tax Free Savings',
+  wills_estate: 'Wills & Estates',
+  wills_estates: 'Wills & Estates',
+  loan: 'Personal Loan',
+  personal_loan: 'Personal Loan',
+};
+
+async function fetchProductApplications(uid: string): Promise<ClientProduct[]> {
+  const ref = collection(db, 'profiles', uid, 'applications');
+  const q = query(ref, orderBy('createdAt', 'desc'));
+  const snap = await getDocs(q);
+  const all = snap.docs.map((d) => {
+    const data = d.data();
+    return {
+      ...data,
+      id: d.id,
+      productType: data.productType || '',
+      productName: data.productType ? PRODUCT_NAME_MAP[data.productType] || data.productType : '',
+      productDescription: data.statusLabel || '',
+      status: data.status || '',
+      statusLabel: data.statusLabel || '',
+      amount: data.amount ?? undefined,
+      channel: data.channel || 'mobile',
+      reference: data.reference || '',
+      createdAt: data.createdAt?.toDate?.()?.toISOString?.() || data.createdAt || '',
+      updatedAt: data.updatedAt?.toDate?.()?.toISOString?.() || data.updatedAt || '',
+    } as ClientProduct;
+  });
+  const seen = new Set<string>();
+  return all.filter((p) => {
+    if (!p.productType || seen.has(p.productType)) return false;
+    seen.add(p.productType);
+    return true;
+  });
+}
+
 interface AuthContextType {
   user: User | null;
   userProfile: UserProfile | null;
@@ -178,6 +236,7 @@ interface AuthContextType {
   isProfileComplete: boolean;
   isHomeAffairsVerified: boolean;
   isAccountFlagged: boolean;
+  applications: ClientProduct[];
   signIn: (email: string, password: string) => Promise<UserCredential>;
   signInWithGoogle: () => Promise<UserCredential>;
   signInWithFacebook: () => Promise<UserCredential>;
@@ -185,6 +244,7 @@ interface AuthContextType {
   signOut: () => Promise<void>;
   resetPassword: (email: string) => Promise<void>;
   updateUserProfile: (data: Partial<UserProfile>) => Promise<void>;
+  refreshApplications: () => Promise<void>;
   resendVerificationEmail: () => Promise<void>;
   reloadUser: () => Promise<void>;
 }
@@ -195,6 +255,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
   const [loading, setLoading] = useState(true);
+  const [applications, setApplications] = useState<ClientProduct[]>([]);
 
   const socialAuthConfig = useMemo<SocialAuthConfig>(() => {
     const extra = (Constants?.expoConfig?.extra ?? Constants?.manifest?.extra ?? {}) as {
@@ -315,8 +376,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         }
 
         setUserProfile(profile);
+
+        // Fetch client product applications
+        if (user.emailVerified) {
+          try {
+            const products = await fetchProductApplications(user.uid);
+            setApplications(products);
+          } catch (err) {
+            console.warn('[AuthContext] Failed to fetch product applications:', err);
+          }
+        }
       } else {
         setUserProfile(null);
+        setApplications([]);
       }
       setLoading(false);
     });
@@ -418,6 +490,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const signOut = async () => {
     await firebaseSignOut(auth);
     setUserProfile(null);
+    setApplications([]);
+  };
+
+  const refreshApplications = async () => {
+    if (!user?.uid) return;
+    try {
+      const products = await fetchProductApplications(user.uid);
+      setApplications(products);
+    } catch (err) {
+      console.warn('[AuthContext] Failed to refresh applications:', err);
+    }
   };
 
   const resetPassword = async (email: string) => {
@@ -478,6 +561,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         isProfileComplete,
         isHomeAffairsVerified,
         isAccountFlagged,
+        applications,
         signIn,
         signInWithGoogle,
         signInWithFacebook,
@@ -485,6 +569,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         signOut,
         resetPassword,
         updateUserProfile,
+        refreshApplications,
         resendVerificationEmail,
         reloadUser,
       }}

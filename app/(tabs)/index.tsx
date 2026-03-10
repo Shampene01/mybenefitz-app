@@ -21,7 +21,7 @@ function IconRenderer({ icon, size }: { icon: CustomIcon; size: number }) {
 const quickActions = [
   { title: 'Credit Repair', iconKey: 'creditRepair', route: '/(tabs)/credit' },
   { title: 'Get Insurance', iconKey: 'getInsurance', route: '/(tabs)/insurance' },
-  { title: 'Apply for Loan', iconKey: 'applyForLoan', route: '/(tabs)/loans' },
+  { title: 'My Products', iconKey: 'myProducts', route: '/my-products' },
   { title: 'My Profile', iconKey: 'myProfile', route: '/(tabs)/profile' },
 ];
 

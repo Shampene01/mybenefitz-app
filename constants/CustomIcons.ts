@@ -64,12 +64,12 @@ export const ACTION_ICONS: Record<string, CustomIcon> = {
     fallbackIonicon: 'shield-checkmark',
     color: '#4F46E5',
   },
-  applyForLoan: {
-    key: 'applyForLoan',
-    label: 'Apply for Loan',
-    // image: require('../assets/icons/apply-for-loan.png'),
-    fallbackIonicon: 'wallet',
-    color: '#EA580C',
+  myProducts: {
+    key: 'myProducts',
+    label: 'My Products',
+    // image: require('../assets/icons/my-products.png'),
+    fallbackIonicon: 'cube',
+    color: '#0f172a',
   },
   myProfile: {
     key: 'myProfile',

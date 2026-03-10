@@ -221,6 +221,22 @@ export const EMPLOYMENT_TYPE_OPTIONS = [
   { id: 'unemployed', label: 'Unemployed' },
 ];
 
+export const LOAN_QUALIFICATION_OPTIONS = [
+  { id: 'less_than_matric', label: 'Less than Matric' },
+  { id: 'matric', label: 'Matric' },
+  { id: 'higher_certificate', label: 'Higher Certificate' },
+  { id: 'diploma', label: 'Diploma' },
+  { id: 'degree', label: 'Degree' },
+  { id: 'honours', label: 'Honours' },
+  { id: 'masters', label: 'Masters' },
+  { id: 'doctorate', label: 'Doctorate' },
+];
+
+export const PREFERRED_CONTACT_OPTIONS = [
+  { id: 'whatsapp', label: 'WhatsApp' },
+  { id: 'email', label: 'Email' },
+];
+
 export const CONTRIBUTION_FREQUENCY_OPTIONS = [
   { id: 'monthly', label: 'Monthly' },
   { id: 'quarterly', label: 'Quarterly' },
